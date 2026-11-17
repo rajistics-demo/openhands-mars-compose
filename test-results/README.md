@@ -19,3 +19,12 @@ The operator driver was tested with mocks; the live cohorts used the Canvas nati
 - Staged setup and release-builder suite: **46 passed**, using the pinned official Compose fixture and the real Compose CLI for model rendering; lifecycle actions use a simulated Docker daemon.
 - Independent clean-directory preparation: real official-file download/checksum verification, baseline readiness/configuration checks, private environment rendering and repeated initialization passed. Generated secrets were unchanged on repeated initialization. No containers or MARS resources were launched by this check.
 - These checks cover distribution and preparation. They do not replace the earlier live native-job evidence or qualify a complete fresh customer installation, TLS onboarding or model inference.
+
+## Native conversation follow-up — 2026-11-17
+
+- Final focused MARS set, real PostgreSQL 16: **63 passed**, including nine new authenticated startup/readiness tests and the diagnostics capture-fixture fix.
+- Broader relevant Enterprise set: **390 passed** before the final capture-fixture adjustment; the final focused 63-test run covers that adjustment. This is not a claim that the whole Enterprise suite was rerun.
+- Updated staged installer/release suite: **57 passed**, using real Compose rendering and simulated lifecycle actions.
+- One actual Gemini conversation on one MARS VM: **passed**, with terminal/file-editor action and observation events, successful Python assertions and an independently verified provider-side result file.
+- A UI follow-up after reloading the saved conversation: **passed** on the same VM, rereading and asserting the existing workspace data.
+- Earlier network-policy and hosted-budget errors remain in history. No concurrent LLM capacity or fresh customer end-to-end installation is qualified by these results.

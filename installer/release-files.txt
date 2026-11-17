@@ -20,6 +20,7 @@
 0644 docs/INSTALL_MANUAL.md
 0644 docs/INTEGRATION_CONTRACT.md
 0644 docs/INTEGRATION_SEAMS.md
+0644 docs/LLM_VALIDATION.md
 0644 docs/ROLLBACK.md
 0644 docs/SECURITY_REVIEW.md
 0644 docs/STATUS.md
@@ -48,7 +49,9 @@
 0644 enterprise/tests/unit/app_server/test_do_mars_gateway_lifecycle.py
 0644 enterprise/tests/unit/app_server/test_do_mars_lifecycle_idle_probe.py
 0644 enterprise/tests/unit/app_server/test_do_mars_package_fixes.py
+0644 enterprise/tests/unit/app_server/test_do_mars_startup_health_auth.py
 0644 enterprise/tests/unit/server/routes/test_service_run_key_expiry.py
+0644 evidence/llm-followup-completed.jpg
 0644 evidence/native-ten-completed.jpg
 0644 evidence/native-ten-running.jpg
 0644 evidence/provider-ten-observer.jpg

@@ -169,7 +169,7 @@ class LockAndPins(unittest.TestCase):
                 ms.load_lock(self.tampered(mutate))
 
     def test_version_rejection(self):
-        for version in ('latest', '1.89.0-mars1', '1.88.0', '1.88.0-mars0', '1.88.0-mars1/../x'):
+        for version in ('latest', '1.89.0-mars1', '1.88.0', '1.88.0-mars0', '1.88.0-mars2/../x'):
             with self.assertRaises(ms.SetupError, msg=version):
                 ms.load_lock(self.tampered(lambda lk, v=version: lk.update(package_version=v)))
         with self.assertRaises(ms.SetupError):
@@ -245,7 +245,7 @@ class Downloader(unittest.TestCase):
 
 
 class EnvParsing(unittest.TestCase):
-    ALLOWED = ms.SITE_REQUIRED + ms.SITE_OPTIONAL
+    ALLOWED = ms.SITE_KEYS
 
     def test_rejects_anything_a_shell_or_compose_would_evaluate(self):
         marker = Path(tempfile.gettempdir()) / f'mars-pwn-{os.getpid()}'
@@ -275,6 +275,45 @@ class EnvParsing(unittest.TestCase):
 
     def test_redact(self):
         self.assertEqual(ms.redact('pw=abcdefgh1234 ok', ['abcdefgh1234', '']), 'pw=<redacted> ok')
+
+
+LLM = 'llm-gateway.example.com'
+
+
+class LlmEgressHosts(unittest.TestCase):
+    ALLOWED = ('app.example.com', 'runtime.example.com')
+
+    def test_empty_is_valid_and_hosts_are_normalized_in_order(self):
+        self.assertEqual(ms.validate_llm_egress_hosts('', self.ALLOWED), [])
+        self.assertEqual(
+            ms.validate_llm_egress_hosts(f'{LLM},llm-proxy.example.net,{LLM}', self.ALLOWED),
+            [LLM, 'llm-proxy.example.net'],
+        )
+
+    def test_application_and_runtime_hosts_are_deduplicated(self):
+        self.assertEqual(
+            ms.validate_llm_egress_hosts(f'app.example.com,{LLM},runtime.example.com', self.ALLOWED),
+            [LLM],
+        )
+        self.assertEqual(ms.validate_llm_egress_hosts('app.example.com', self.ALLOWED), [])
+
+    def test_rejects_urls_wildcards_ports_credentials_ips_and_placeholders(self):
+        for bad in (
+            f'https://{LLM}', f'{LLM}/v1', f'{LLM}:443', f'user:pw@{LLM}', f'*.{LLM}', '.example.com',
+            'LLM-Gateway.example.com', '10.0.0.1', '[::1]', 'localhost', 'intranet', f'{LLM},',
+            f',{LLM}', f'{LLM},,llm-proxy.example.net', f'{LLM} ', 'llm.example.invalid',
+            'llm-gateway.example.invalid', 'llm.corp.internal', 'llm.local', 'llm.test',
+            f'{LLM};touch x', f'$({LLM})', 'a' * 64 + '.example.com',
+            ','.join(f'h{i}.example.com' for i in range(ms.MAX_LLM_EGRESS_HOSTS + 1)),
+        ):
+            with self.assertRaises(ms.SetupError, msg=bad) as ctx:
+                ms.validate_llm_egress_hosts(bad, self.ALLOWED)
+            self.assertNotIn(bad, str(ctx.exception))
+
+    def test_site_env_parser_still_refuses_shell_syntax_for_the_key(self):
+        for value in (f'{LLM} llm-proxy.example.net', f'"{LLM}"', '${HOME}', f'{LLM}#x'):
+            with self.assertRaises(ms.SetupError, msg=value):
+                ms.parse_env_text(f'MARS_LLM_EGRESS_HOSTS={value}\n', 'site.env', ms.SITE_KEYS)
 
 
 class Init(Base):
@@ -379,7 +418,7 @@ class CheckAndUp(Base):
         self.assertEqual(auto['AUTOMATION_OPENHANDS_API_BASE_URL'], 'http://app:3000')
         self.assertEqual(auto['AUTOMATION_SANDBOX_INTERNAL_URL'], '')
         self.assertEqual(services['app']['environment']['OH_SANDBOX_MAX_NUM_SANDBOXES'], '10')
-        self.assertEqual(services['app']['image'], 'openhands-enterprise-mars:1.88.0-mars1')
+        self.assertEqual(services['app']['image'], 'openhands-enterprise-mars:1.88.0-mars2')
         for name in ('proxy', 'mars-gateway'):
             self.assertEqual([p['host_ip'] for p in services[name]['ports']], ['127.0.0.1'])
         self.assertNotIn('example.invalid', json.dumps(services))
@@ -499,6 +538,116 @@ class CheckAndUp(Base):
         self.assertNotIn('example.invalid', text)
         self.assertNotIn(init_key, out + err)
         self.assertEqual(self.cli('render-env-spec', '--dir', str(self.dir))[0], 0)
+
+    def add_site(self, key, value):
+        with open(self.dir / 'site.env', 'a') as fh:
+            fh.write(f'{key}={value}\n')
+
+    def render_spec(self):
+        rc, out, err = self.cli('render-env-spec', '--dir', str(self.dir))
+        return rc, out + err, self.dir / 'private' / 'environment.yaml'
+
+    @staticmethod
+    def egress(text):
+        lines = text.split('\n')
+        start = lines.index('egress:') + 1
+        hosts = []
+        for line in lines[start:]:
+            if not line.startswith('  '):
+                break
+            if line.startswith('  - '):
+                hosts.append(line[4:])
+        return hosts
+
+    def test_init_documents_optional_llm_egress_hosts_unset(self):
+        self.init()
+        text = (self.dir / 'site.env').read_text()
+        self.assertIn('# MARS_LLM_EGRESS_HOSTS=', text)
+        self.assertIn('do not guess from the model name', text)
+        self.assertNotIn('MARS_LLM_EGRESS_HOSTS', ms.Install(str(self.dir)).read_site())
+
+    def test_render_env_spec_without_llm_hosts_is_unchanged(self):
+        self.init()
+        rc, out, spec = self.render_spec()
+        self.assertEqual(rc, 0, out)
+        text = spec.read_text()
+        self.assertEqual(self.egress(text), ['app.example.com', 'runtime.example.com'])
+        init_key = (self.dir / 'secrets' / 'init_api_key').read_text()
+        expected = ms.ENV_SPEC_TEMPLATE.read_text()
+        for old, new in (('app.example.invalid', 'app.example.com'),
+                         ('runtime.example.invalid', 'runtime.example.com'),
+                         ('<same value as your init_api_key file>', init_key)):
+            expected = expected.replace(old, new)
+        self.assertEqual(text, expected)
+        self.assertNotIn('LLM gateway', text)
+
+    def test_render_env_spec_adds_explicit_llm_hosts_deduplicated(self):
+        self.init()
+        self.add_site('MARS_LLM_EGRESS_HOSTS', f'{LLM},app.example.com,llm-proxy.example.net,{LLM}')
+        site_before = (self.dir / 'site.env').read_bytes()
+        private_before = {p: p.read_bytes() for p in (
+            self.dir / 'private' / 'stack.env', *sorted((self.dir / 'secrets').iterdir()))}
+        rc, out, spec = self.render_spec()
+        self.assertEqual(rc, 0, out)
+        text = spec.read_text()
+        self.assertEqual(self.egress(text),
+                         ['app.example.com', 'runtime.example.com', LLM, 'llm-proxy.example.net'])
+        self.assertEqual(text.count(LLM), 1)
+        self.assertEqual(spec.stat().st_mode & 0o077, 0)
+        init_key = (self.dir / 'secrets' / 'init_api_key').read_text()
+        self.assertIn(init_key, text)
+        for secret in self.secrets():
+            self.assertNotIn(secret, out)
+        # Only the manifest changes: site, generated secrets and stack.env are untouched.
+        self.assertEqual((self.dir / 'site.env').read_bytes(), site_before)
+        for path, data in private_before.items():
+            self.assertEqual(path.read_bytes(), data, path.name)
+        # Re-rendering the same input is idempotent.
+        self.assertEqual(self.render_spec()[0], 0)
+
+    def test_invalid_llm_hosts_fail_closed_without_writing_or_echoing(self):
+        self.init()
+        marker = self.tmp / 'pwned'
+        for bad in (f'https://{LLM}', f'*.{LLM}', f'{LLM}:8443', '10.1.2.3', f'{LLM},',
+                    'llm.example.invalid', f'$(touch {marker})'):
+            lines = [line for line in (self.dir / 'site.env').read_text().split('\n')
+                     if not line.startswith('MARS_LLM_EGRESS_HOSTS=')]
+            (self.dir / 'site.env').write_text('\n'.join(lines))
+            self.add_site('MARS_LLM_EGRESS_HOSTS', bad)
+            rc, out, spec = self.render_spec()
+            self.assertEqual(rc, 1, bad)
+            self.assertFalse(spec.exists(), bad)
+            self.assertNotIn(bad, out)
+        self.assertFalse(marker.exists())
+
+    def test_llm_hosts_change_after_render_refuses_silent_overwrite(self):
+        self.init()
+        self.assertEqual(self.render_spec()[0], 0)
+        self.add_site('MARS_LLM_EGRESS_HOSTS', LLM)
+        rc, out, spec = self.render_spec()
+        self.assertEqual(rc, 1)
+        self.assertIn('exists and differs', out)
+        self.assertNotIn(LLM, spec.read_text())
+
+    @unittest.skipUnless(HAVE_REAL_COMPOSE, 'needs real Compose and the pinned stock file')
+    def test_llm_hosts_are_not_forwarded_into_compose_environment(self):
+        self.init()
+        self.install_stock()
+        self.add_site('MARS_LLM_EGRESS_HOSTS', LLM)
+        rc, out, err = self.cli('check', '--dir', str(self.dir), '--stage', 'baseline')
+        self.assertEqual(rc, 0, out + err)
+        derived = (self.dir / 'private' / 'compose.env').read_text()
+        self.assertNotIn('MARS_LLM_EGRESS_HOSTS', derived)
+        self.assertNotIn(LLM, json.dumps(self.compose_config('baseline')))
+
+    def test_invalid_llm_hosts_block_check(self):
+        self.init()
+        # Passes the plain env parser, so this exercises the hostname validator.
+        self.add_site('MARS_LLM_EGRESS_HOSTS', f'https://{LLM}')
+        rc, out, _ = self.cli('check', '--dir', str(self.dir), '--stage', 'baseline')
+        self.assertEqual(rc, 1)
+        self.assertIn('MARS_LLM_EGRESS_HOSTS item 1 must be an exact lowercase public DNS hostname', out)
+        self.assertNotIn(LLM, out)
 
     def test_partial_first_up_after_volume_creation_can_be_retried_safely(self):
         self.init()

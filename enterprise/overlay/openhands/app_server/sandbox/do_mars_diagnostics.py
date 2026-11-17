@@ -19,6 +19,7 @@ EVENTS = frozenset(
         'do_mars.cleanup_after_init_failure_failed',
         'do_mars.init_failed',
         'do_mars.idle_probe_failed',
+        'do_mars.health_probe_failed',
         'do_mars.tunnel_ws_failed',
         'do_mars.tunnel_ws_closed',
         'do_mars.tunnel_request_failed',
@@ -40,6 +41,7 @@ OPERATIONS = frozenset(
         'gateway.http',
         'gateway.ws',
         'idle.probe',
+        'health.probe',
     }
 )
 PHASES = frozenset({'handshake', 'stream', 'provider_frame', 'request', 'response'})

@@ -87,6 +87,10 @@ SITE_OPTIONAL = (
     'AUTOMATION_RUN_KEY_TTL_SECONDS',
     'OH_SANDBOX_LIFECYCLE_IDLE_SECONDS',
 )
+# Read only by render-env-spec; never forwarded into the Compose environment.
+SITE_MANIFEST_ONLY = ('MARS_LLM_EGRESS_HOSTS',)
+SITE_KEYS = SITE_REQUIRED + SITE_OPTIONAL + SITE_MANIFEST_ONLY
+MAX_LLM_EGRESS_HOSTS = 8
 STACK_GENERATED = ('DB_PASS', 'AUTOMATION_SERVICE_KEY', 'AUTOMATION_WEBHOOK_SECRET', 'AUTOMATION_KV_SECRET')
 STACK_OPTIONAL = ('OPENHANDS_LICENSE_KEY', 'LICENSE_SERVER_URL', 'MARS_GATEWAY_DB_USER', 'MARS_GATEWAY_DB_PASS')
 STACK_SECRET_KEYS = STACK_GENERATED + ('OPENHANDS_LICENSE_KEY', 'MARS_GATEWAY_DB_PASS')
@@ -255,6 +259,34 @@ def validate_origin(value: str, key: str) -> str:
     return host
 
 
+def validate_llm_egress_hosts(value: str, already_allowed: tuple[str, ...]) -> list[str]:
+    """Exact extra guest egress hostnames, in order, minus ones already allowed.
+
+    Operators list the hostname(s) their resolved LLM gateway/provider actually
+    uses; nothing is inferred from a model name. Empty is valid.
+    """
+    key = 'MARS_LLM_EGRESS_HOSTS'
+    if value == '':
+        return []
+    items = value.split(',')
+    if len(items) > MAX_LLM_EGRESS_HOSTS:
+        raise SetupError(f'{key} lists more than {MAX_LLM_EGRESS_HOSTS} hostnames')
+    hosts: list[str] = []
+    for n, host in enumerate(items, 1):
+        if not host:
+            raise SetupError(f'{key} item {n} is empty (use plain comma-separated hostnames)')
+        if not HOST_RE.match(host):
+            raise SetupError(
+                f'{key} item {n} must be an exact lowercase public DNS hostname '
+                '(no scheme, path, port, credentials, wildcard or IP address)'
+            )
+        if host.endswith(RESERVED_HOST_SUFFIXES):
+            raise SetupError(f'{key} item {n} uses a reserved, local or placeholder hostname')
+        if host not in hosts and host not in already_allowed:
+            hosts.append(host)
+    return hosts
+
+
 def validate_port(value: str, key: str) -> int:
     if not re.match(r'^[0-9]{4,5}$', value or '') or not 1024 <= int(value) <= 65535:
         raise SetupError(f'{key} must be a port between 1024 and 65535')
@@ -287,7 +319,10 @@ def validate_site(site: dict[str, str], stage: str) -> dict[str, str]:
             raise SetupError(f'{key} must be an integer in {low}..{high}')
     if site.get('ENABLE_POSTHOG_ANALYTICS', 'true') not in ('true', 'false'):
         raise SetupError('ENABLE_POSTHOG_ANALYTICS must be true or false')
-    return {'app_host': app_host, 'runtime_host': runtime_host}
+    llm_hosts = validate_llm_egress_hosts(
+        site.get('MARS_LLM_EGRESS_HOSTS', ''), (app_host, runtime_host)
+    )
+    return {'app_host': app_host, 'runtime_host': runtime_host, 'llm_egress_hosts': llm_hosts}
 
 
 def validate_stack(stack: dict[str, str]) -> None:
@@ -496,7 +531,7 @@ class Install:
 
     # env ------------------------------------------------------------------
     def read_site(self) -> dict[str, str]:
-        return read_env_file(self.site_env, SITE_REQUIRED + SITE_OPTIONAL, private=False)
+        return read_env_file(self.site_env, SITE_KEYS, private=False)
 
     def read_stack(self) -> dict[str, str]:
         stack = read_env_file(self.stack_env, STACK_GENERATED + STACK_OPTIONAL, private=True)
@@ -591,6 +626,12 @@ def site_env_text(project: str, app_origin: str, runtime_origin: str, config_id:
         '# DO_MARS_SESSION_TTL_SECONDS=28800\n'
         '# AUTOMATION_RUN_KEY_TTL_SECONDS=3600\n'
         '# OH_SANDBOX_LIFECYCLE_IDLE_SECONDS=1800\n'
+        '# Optional MARS guest egress for LLM calls: the exact hostname(s) of the LLM\n'
+        '# gateway/provider your resolved model profile calls (a provider connection can\n'
+        '# override the default; do not guess from the model name). Plain comma-separated\n'
+        '# lowercase hostnames, no https://, port, path or wildcard. Leave unset when\n'
+        '# inference is served on the APP_ORIGIN hostname. Used by render-env-spec.\n'
+        '# MARS_LLM_EGRESS_HOSTS=llm-gateway.example.invalid\n'
     )
 
 
@@ -645,7 +686,7 @@ def cmd_init(args) -> int:
     config_id = args.mars_config_id or ''
     site_text = site_env_text(args.project, args.app_origin, args.runtime_origin, config_id,
                               args.app_port, args.gateway_port)
-    validate_site(parse_env_text(site_text, 'site.env', SITE_REQUIRED + SITE_OPTIONAL), 'baseline')
+    validate_site(parse_env_text(site_text, 'site.env', SITE_KEYS), 'baseline')
 
     state = None
     if install.dir.exists():
@@ -679,7 +720,7 @@ def cmd_init(args) -> int:
     report = []
     if install.site_env.exists():
         existing = install.read_site()
-        wanted = parse_env_text(site_text, 'site.env', SITE_REQUIRED + SITE_OPTIONAL)
+        wanted = parse_env_text(site_text, 'site.env', SITE_KEYS)
         for key in ('APP_ORIGIN', 'RUNTIME_ORIGIN', 'APP_PORT', 'MARS_GATEWAY_HOST_PORT'):
             if existing.get(key) != wanted[key]:
                 raise SetupError(f'site.env already sets {key} differently; edit site.env instead of re-running init')
@@ -759,10 +800,14 @@ def cmd_render_env_spec(args) -> int:
         raise SetupError('cannot read secrets/init_api_key (render before changing its ownership)') from None
     if len(init_key) < 32 or not re.match(r'^[A-Za-z0-9_-]+$', init_key):
         raise SetupError('secrets/init_api_key must be 32+ URL-safe characters')
+    llm_lines = ''.join(
+        ['  # LLM gateway/provider hosts from MARS_LLM_EGRESS_HOSTS.\n']
+        + [f'  - {host}\n' for host in hosts['llm_egress_hosts']]
+    ) if hosts['llm_egress_hosts'] else ''
     text = ENV_SPEC_TEMPLATE.read_text(encoding='utf-8')
     for old, new in (
         ('  - app.example.invalid\n', f'  - {hosts["app_host"]}\n'),
-        ('  - runtime.example.invalid\n', f'  - {hosts["runtime_host"]}\n'),
+        ('  - runtime.example.invalid\n', f'  - {hosts["runtime_host"]}\n' + llm_lines),
         ("'<same value as your init_api_key file>'", f"'{init_key}'"),
     ):
         if text.count(old) != 1:

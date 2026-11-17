@@ -58,3 +58,7 @@ A separate earlier local-job attempt completed its work but its callback failed 
 Both portable Dockerfiles successfully built from pinned stock Enterprise 1.88.0 and Automation 1.30.0 images. The live host retained its existing AWS-overlay migration chain; the portable package rebases the equivalent additive MARS schema onto stock revision 213. All eight shipped MARS modules were also compared byte-for-byte across the live image, portable stock image and this package. The live run does **not** prove a fresh customer's full onboarding/TLS/migration deployment. Follow INSTALL.md on a disposable evaluation installation and verify each preflight step.
 
 Focused isolated image tests on PostgreSQL 16 passed **94/94**, covering provider/store/lifecycle/gateway behavior and safe diagnostic output. The package's broader source tests on PostgreSQL 17 and installer/migration checks are summarized in STATUS.md. Raw logs, credentials, account/resource identifiers and real infrastructure addresses are excluded from this repository.
+
+## Separate interactive LLM validation — 2026-11-17
+
+One real Gemini conversation plus a follow-up after reloading the saved chat passed on one MARS VM. Terminal execution, file-editor actions and an independent provider-side file read verified the result. This is separate from the no-LLM concurrent native automation cohorts above. See [the full real-conversation report](LLM_VALIDATION.md).

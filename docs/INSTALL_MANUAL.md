@@ -74,8 +74,8 @@ With this role, the plaintext and encrypted session-key columns cannot be read. 
 ## 5. Build the images
 
 ```bash
-docker build -f docker/enterprise.Dockerfile  -t registry.example.invalid/openhands-enterprise-mars:1.88.0-mars1 .
-docker build -f docker/automation.Dockerfile -t registry.example.invalid/openhands-automation-mars:1.30.0-mars1 .
+docker build -f docker/enterprise.Dockerfile  -t registry.example.invalid/openhands-enterprise-mars:1.88.0-mars2 .
+docker build -f docker/automation.Dockerfile -t registry.example.invalid/openhands-automation-mars:1.30.0-mars2 .
 ```
 
 Each build fails without writing anything if the base differs from the release:

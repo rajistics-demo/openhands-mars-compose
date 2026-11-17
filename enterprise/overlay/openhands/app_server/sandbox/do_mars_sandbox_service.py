@@ -581,6 +581,47 @@ class DoMarsSandboxService(ManagedSandboxService):
                 'DigitalOcean MARS deletion is unconfirmed'
             ) from exc
 
+    async def _check_agent_server_alive(
+        self, sandbox: SandboxInfo, httpx_client: httpx.AsyncClient
+    ) -> bool:
+        """Readiness probe for ``wait_for_sandbox_running``.
+
+        The gateway authenticates every sandbox route, ``/alive`` included,
+        so the stock anonymous probe can never succeed here. Without a key
+        no probe is sent at all.
+        """
+        if not sandbox.session_api_key:
+            return False
+        try:
+            url = self._get_agent_server_url(sandbox)
+            response = await httpx_client.get(
+                f'{url.rstrip("/")}/alive',
+                headers={'X-Session-API-Key': sandbox.session_api_key},
+                timeout=5.0,
+            )
+        except Exception as exc:
+            log_diagnostic(
+                'do_mars.health_probe_failed',
+                level=logging.DEBUG,
+                operation='health.probe',
+                reason='transport_error',
+                error_class=error_class(exc),
+            )
+            return False
+        if not response.is_success:
+            # 5xx is expected while the guest boots; a refused key is not.
+            log_diagnostic(
+                'do_mars.health_probe_failed',
+                level=logging.WARNING
+                if response.status_code in (401, 403)
+                else logging.DEBUG,
+                operation='health.probe',
+                reason='bad_status',
+                status_code=response.status_code,
+            )
+            return False
+        return True
+
     async def get_idle_time(self, sandbox: SandboxInfo) -> float | None:
         if not sandbox.session_api_key:
             return None

@@ -56,4 +56,12 @@ Use the [installation guide](INSTALL.md) and [rollback procedure](ROLLBACK.md). 
 | Guest API URL and native run credentials | [Automation backend patch](../automation/patches/backends_cloud.patch), [run-key patch](../automation/patches/utils_api_key.patch) and [Enterprise expiry endpoint patch](../enterprise/patches/server_routes_service.patch) |
 | Completion metadata persistence | [Automation completion-route patch](../automation/patches/router.patch) and [behavioral tests](../automation/tests/test_mars_package_patches.py) |
 
-Installer/release tooling prepares the deployment; it does not alter these runtime contracts. Runtime source and prior native-run evidence remain unchanged by the packaging release.
+Installer/release tooling prepares the deployment; it does not alter these runtime contracts. The mars2 follow-up adds the MARS-only authenticated readiness probe described below; prior native-run evidence remains separate.
+
+## Model inference and native conversation startup
+
+MARS routes readiness checks through the authenticated runtime gateway. The adapter's MARS-only `/alive` probe sends the existing session key; missing or rejected keys never report readiness. Anonymous gateway access remains denied. Remote, Docker and E2B providers keep their existing shared behavior.
+
+Agent Server calls the model gateway/provider selected by the normal Enterprise model connection. This integration does not create model-provider credentials. Existing Enterprise credential delivery remains in use; do not assume all model secrets are short-lived or callback-scoped. The DO team token remains on the control plane.
+
+Allow the resolved inference endpoint's exact hostname with `MARS_LLM_EGRESS_HOSTS` before rendering and registering a new immutable MARS environment config. A provider connection can override the base URL shown on a model profile. The installer does not discover endpoints, create configs, fund model accounts or widen egress automatically. Network reachability and a usable model budget are separate requirements. See [the observed real-conversation result](LLM_VALIDATION.md).

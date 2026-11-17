@@ -10,12 +10,12 @@ Requirements: Linux, Python 3.11+, Docker Engine and Docker Compose 2.24.4+, Ent
 
 Download the ZIP and checksum from [Releases](https://github.com/rajistics-demo/openhands-mars-compose/releases). Verify the downloaded archive's SHA-256 before extracting it, then enter its versioned directory. A checksum detects a changed download; obtain the release/checksum through a trusted channel because the checksum is not a digital signature. You can also use a checkout of the corresponding release tag.
 
-For release `v1.88.0-mars1`, download `openhands-enterprise-mars-1.88.0-mars1.zip` and its `.zip.sha256` asset into the same directory:
+For release `v1.88.0-mars2`, download `openhands-enterprise-mars-1.88.0-mars2.zip` and its `.zip.sha256` asset into the same directory:
 
 ```bash
-sha256sum -c openhands-enterprise-mars-1.88.0-mars1.zip.sha256
-unzip openhands-enterprise-mars-1.88.0-mars1.zip
-cd openhands-enterprise-mars-1.88.0-mars1
+sha256sum -c openhands-enterprise-mars-1.88.0-mars2.zip.sha256
+unzip openhands-enterprise-mars-1.88.0-mars2.zip
+cd openhands-enterprise-mars-1.88.0-mars2
 ```
 
 Provide two public HTTPS origins served by a TLS terminator you operate. The application and runtime origins must use different hostnames. [Caddyfile.example](../compose/Caddyfile.example) shows the upstreams: application port 9043 and runtime gateway port 8100 on host loopback. Adapt the example if you choose different ports.
@@ -73,13 +73,23 @@ Append your normal `exec -T db pg_dump ...` backup command to that displayed pre
 
 ## 4. Configure your MARS environment and secrets
 
-The init step generated a session signing key and a bootstrap init key locally. It did not send them to DO. Render the MARS environment manifest **before** changing secret-file ownership:
+The init step generated a session signing key and a bootstrap init key locally. It did not send them to DO.
+
+Before rendering, set optional `MARS_LLM_EGRESS_HOSTS` in `site.env` to the exact hostname(s) your resolved model provider connection calls. For example, replace the placeholder below with your gateway hostname:
+
+```dotenv
+MARS_LLM_EGRESS_HOSTS=llm-gateway.your-domain.com
+```
+
+Use lowercase hostnames separated by commas, without spaces, URL schemes, ports, paths or wildcards. Leave it unset when inference uses the application hostname. A provider connection can override a model profile's displayed base URL, so confirm the resolved endpoint rather than inferring it from the model name. The setting only contributes to the MARS manifest; it is not forwarded to Compose services. A funded, usable model connection is still required.
+
+Render the MARS environment manifest **before** changing secret-file ownership:
 
 ```bash
 python3 installer/mars_setup.py render-env-spec --dir "$MARS_INSTALL_DIR"
 ```
 
-The resulting `private/environment.yaml` contains the bootstrap secret and exact application/runtime egress hosts. Keep it private. Use the official DO console/CLI/API available to your account to create an environment config from this manifest. This package makes no MARS API calls during setup. Give the config a new release-specific name instead of changing an existing config in place.
+The resulting `private/environment.yaml` contains the bootstrap secret and exact application/runtime and configured LLM egress hosts. Keep it private. Use the official DO console/CLI/API available to your account to create an environment config from this manifest. This package makes no MARS API calls during setup. Give the config a new release-specific name instead of changing an existing config in place.
 
 Set `DO_MARS_CONFIG_ID` in `site.env` to the returned config UUID. Put **your own DO team token** into `secrets/do_team_token` using a secure editor. Do not copy credentials from the original evaluation installation.
 

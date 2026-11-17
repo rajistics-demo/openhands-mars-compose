@@ -4,14 +4,14 @@ Run native OpenHands Automation jobs in DigitalOcean MARS microVMs while keeping
 
 This repository supplies the MARS sandbox provider, authenticated runtime gateway, version-checked image patches and installation tools. **You use the official OpenHands Compose stack with this add-on. You do not need a copy of the original evaluation machine or its AWS configuration.** The host can be your own Linux machine on DigitalOcean, AWS or another provider.
 
-The evaluated integration passed **1, 5 and 10 concurrent native jobs**, including persisted completion outcomes and automatic VM cleanup. See [results and screenshots](docs/VALIDATION.md). This is a version-pinned customer evaluation package; full LLM workloads, fresh customer onboarding and Kubernetes capacity remain qualification work.
+The evaluated integration passed **1, 5 and 10 concurrent native jobs**, including persisted completion outcomes and automatic VM cleanup. See [results and screenshots](docs/VALIDATION.md). This is a version-pinned customer evaluation package; a real Gemini conversation and a post-reload follow-up also passed on one MARS VM. Broader LLM workloads, fresh customer onboarding and Kubernetes capacity remain qualification work.
 
 ## What the integration does
 
 - Enterprise creates, identifies, pauses, resumes and deletes MARS sandboxes through its existing Sandbox V1 interfaces.
 - The runtime gateway carries HTTP and WebSocket traffic to Agent Server inside the VM through DO's authenticated port-forward. The VM has no public inbound service URL.
 - The VM calls back to Enterprise over HTTPS. Automation keeps run status and completion outcomes in its database, so the native history survives VM cleanup.
-- Docker Compose hosts the control plane. MARS provides the job's CPU, memory and workspace. An existing LLM gateway/provider remains a separate part of your model configuration.
+- Docker Compose hosts the control plane. MARS provides the job's CPU, memory and workspace. An existing LLM gateway/provider remains a separate part of your model configuration. Allow its resolved hostname through MARS egress using `MARS_LLM_EGRESS_HOSTS`; see the installation guide.
 
 ```mermaid
 flowchart LR
@@ -47,12 +47,12 @@ Install Docker using the [official Docker Engine instructions](https://docs.dock
 
 Download the versioned ZIP and checksum from [GitHub Releases](https://github.com/rajistics-demo/openhands-mars-compose/releases), or clone this repository and check out the corresponding release tag. Repository/release access is required while this project is private. Extract the bundle on the machine that will run Compose.
 
-For this release, download both assets from [v1.88.0-mars1](https://github.com/rajistics-demo/openhands-mars-compose/releases/tag/v1.88.0-mars1), then run:
+For this release, download both assets from [v1.88.0-mars2](https://github.com/rajistics-demo/openhands-mars-compose/releases/tag/v1.88.0-mars2), then run:
 
 ```bash
-sha256sum -c openhands-enterprise-mars-1.88.0-mars1.zip.sha256
-unzip openhands-enterprise-mars-1.88.0-mars1.zip
-cd openhands-enterprise-mars-1.88.0-mars1
+sha256sum -c openhands-enterprise-mars-1.88.0-mars2.zip.sha256
+unzip openhands-enterprise-mars-1.88.0-mars2.zip
+cd openhands-enterprise-mars-1.88.0-mars2
 python3 installer/mars_setup.py --help
 ```
 

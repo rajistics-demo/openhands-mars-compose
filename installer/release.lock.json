@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "package_version": "1.88.0-mars1",
+  "package_version": "1.88.0-mars2",
   "enterprise": {
     "version": "1.88.0",
     "commit": "c6191be5fb66e5ed6472062d9f6a554b58570d97",
@@ -19,8 +19,8 @@
     "base_image": "ghcr.io/openhands/automation:1.30.0@sha256:fb722b6fcde1a7fa67a15c40eb83af0ca23f1c111d0bc745f3b77a8b1bd33afa"
   },
   "local_images": {
-    "app": "openhands-enterprise-mars:1.88.0-mars1",
-    "automation": "openhands-automation-mars:1.30.0-mars1"
+    "app": "openhands-enterprise-mars:1.88.0-mars2",
+    "automation": "openhands-automation-mars:1.30.0-mars2"
   },
   "requirements": {
     "python": "3.11",

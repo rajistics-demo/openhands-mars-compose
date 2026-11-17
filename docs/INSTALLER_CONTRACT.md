@@ -13,11 +13,11 @@ This document gives the exact commands of the staged setup tool `installer/mars_
 
 | Item | Value |
 |---|---|
-| Package version | `1.88.0-mars1` |
+| Package version | `1.88.0-mars2` |
 | Enterprise | 1.88.0, commit `c6191be5fb66e5ed6472062d9f6a554b58570d97` |
 | Stock Compose | `https://raw.githubusercontent.com/OpenHands/enterprise/c6191be5fb66e5ed6472062d9f6a554b58570d97/docker-compose.yml`, 9539 bytes, SHA256 `d17ec0f72978b50f0d1df666e9ad8c2e7cdd9b2938601b52b3a4dcfb97d7ac55` |
 | Stock images (baseline) | `APP_IMAGE` / `AUTOMATION_IMAGE` set to the digests in `docker/*.Dockerfile` |
-| Local MARS images | `openhands-enterprise-mars:1.88.0-mars1`, `openhands-automation-mars:1.30.0-mars1` (no registry; never pushed) |
+| Local MARS images | `openhands-enterprise-mars:1.88.0-mars2`, `openhands-automation-mars:1.30.0-mars2` (no registry; never pushed) |
 | Migrations | base `213`, package `do_mars_001` |
 | Sandbox cap | 10 per identity (not configurable here) |
 
@@ -147,7 +147,7 @@ Setting the role while the database is still at `213` is refused.
 python3 installer/mars_release.py sums --check            # source SHA256SUMS == manifest files
 python3 installer/mars_release.py build --out /tmp/mars-release            # git checkout: HEAD recorded, verified
 python3 installer/mars_release.py build --out /tmp/mars-release --source-commit <40-hex>   # no git: declared
-python3 installer/mars_release.py verify /tmp/mars-release/openhands-enterprise-mars-1.88.0-mars1.zip
+python3 installer/mars_release.py verify /tmp/mars-release/openhands-enterprise-mars-1.88.0-mars2.zip
 ```
 
 How the builder selects and writes files:
@@ -176,3 +176,7 @@ The tests use a fake `docker` CLI (`installer/tests/fake_docker.py`) for daemon 
 - a live download (the coordinator separately confirmed HTTP 200 and the exact hash for the pinned URL);
 - TLS routing, real `root:42420` ownership (the permission test uses a group the non-root test user belongs to as a stand-in for 42420; the files are user-owned there, not root-owned), or a fresh end-to-end MARS install;
 - non-Linux hosts, rootless Docker and Docker Desktop.
+
+## Exact model egress hosts
+
+Optional `MARS_LLM_EGRESS_HOSTS` in `site.env` is read by site validation and `render-env-spec` only. It accepts up to eight comma-separated exact lowercase public DNS hostnames, deduplicated in order against the application/runtime hosts. Empty is valid. URLs, ports, credentials, wildcards, IP literals, whitespace, empty entries and reserved placeholder/local suffixes are rejected without echoing the value. It is never forwarded into `private/compose.env` or Compose services. The operator obtains the hostname from the resolved model-provider connection; no endpoint discovery or resource creation occurs. Changing the list after rendering refuses to overwrite a differing private manifest. Register a new immutable MARS environment config and explicitly select it for subsequent VMs.

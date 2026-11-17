@@ -37,3 +37,5 @@ An Enterprise `DELETE` that returns **503** for a MARS sandbox is `SandboxDelete
 4. The row has no provider id and its create is unresolved: `delete_unconfirmed reason=unresolved_intent`.
 
 The **root cause of the ten 503s in the live ten-run attempt is not established**. This package only adds the records that will identify it on the next run, with the evidence already preserved by the coordinator. It does not change the delete semantics.
+
+The MARS native-start probe emits `do_mars.health_probe_failed` with operation `health.probe`. Transport exceptions carry only a bounded error class at DEBUG; refused authentication (401/403) is WARNING, other unsuccessful statuses are DEBUG. Keys, URLs and response bodies are excluded. A healthy sandbox does not establish model inference: inspect conversation errors separately for egress failures, authentication and exhausted provider budgets.

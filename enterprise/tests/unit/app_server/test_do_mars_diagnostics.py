@@ -51,7 +51,9 @@ DIAG = 'openhands.app_server.sandbox.do_mars_diagnostics'
 def _env(monkeypatch, caplog):
     # The production logger may disable propagation; attach the capture handler
     # directly so this test observes the same records in source and image runs.
+    # Propagation is cut so source-tree logging config cannot capture twice.
     logger = logging.getLogger(DIAG)
+    monkeypatch.setattr(logger, 'propagate', False)
     logger.addHandler(caplog.handler)
     monkeypatch.setenv('DO_MARS_SESSION_SIGNING_KEY', SIGNING_KEY)
     monkeypatch.setenv('DO_MARS_TEAM_TOKEN', TEAM_TOKEN)

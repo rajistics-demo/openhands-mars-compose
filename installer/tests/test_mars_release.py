@@ -48,7 +48,7 @@ class Release(unittest.TestCase):
         zip2, digest2 = self.build(out=self.tmp / 'out2')
         self.assertEqual(data1, zip2.read_bytes())
         self.assertEqual(digest1, digest2)
-        self.assertEqual(zip1.name, 'openhands-enterprise-mars-1.88.0-mars1.zip')
+        self.assertEqual(zip1.name, 'openhands-enterprise-mars-1.88.0-mars2.zip')
         self.assertEqual((self.out / f'{zip1.name}.sha256').read_text(),
                          f'{hashlib.sha256(data1).hexdigest()}  {zip1.name}\n')
         release = mr.verify(zip1)
@@ -66,7 +66,7 @@ class Release(unittest.TestCase):
 
     def test_sidecar_symlink_or_unknown_content_is_not_overwritten(self):
         self.out.mkdir()
-        name = 'openhands-enterprise-mars-1.88.0-mars1.zip'
+        name = 'openhands-enterprise-mars-1.88.0-mars2.zip'
         sidecar = self.out / (name + '.sha256')
         victim = self.tmp / 'operator-file'
         victim.write_text('preserve this data')
@@ -130,7 +130,7 @@ class Release(unittest.TestCase):
     def test_version_commit_mode_and_output_location_rejection(self):
         lock_path = self.src / mr.LOCK
         lock = json.loads(lock_path.read_text())
-        for version in ('latest', '1.88.0-mars1/../../x', '2.0.0-mars1'):
+        for version in ('latest', '1.88.0-mars2/../../x', '2.0.0-mars1'):
             lock_path.write_text(json.dumps({**lock, 'package_version': version}))
             with self.assertRaises(mr.ReleaseError, msg=version):
                 self.build()
@@ -146,14 +146,14 @@ class Release(unittest.TestCase):
 
     def test_existing_different_archive_is_not_overwritten(self):
         self.out.mkdir()
-        (self.out / 'openhands-enterprise-mars-1.88.0-mars1.zip').write_bytes(b'older')
+        (self.out / 'openhands-enterprise-mars-1.88.0-mars2.zip').write_bytes(b'older')
         with self.assertRaises(mr.ReleaseError):
             self.build()
-        self.assertEqual((self.out / 'openhands-enterprise-mars-1.88.0-mars1.zip').read_bytes(), b'older')
+        self.assertEqual((self.out / 'openhands-enterprise-mars-1.88.0-mars2.zip').read_bytes(), b'older')
 
     def test_verify_rejects_tampering_extra_entries_and_symlinks(self):
         zip_path, _ = self.build()
-        root = 'openhands-enterprise-mars-1.88.0-mars1/'
+        root = 'openhands-enterprise-mars-1.88.0-mars2/'
         with zipfile.ZipFile(zip_path) as zf:
             entries = [(i, zf.read(i)) for i in zf.infolist()]
 
@@ -188,7 +188,7 @@ class Release(unittest.TestCase):
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(zf.read(info))
                 os.chmod(target, (info.external_attr >> 16) & 0o777)
-        root = bundle / 'openhands-enterprise-mars-1.88.0-mars1'
+        root = bundle / 'openhands-enterprise-mars-1.88.0-mars2'
         manifest_count = len(mr.read_manifest(root))
         self.assertEqual(ms.verify_package_sums(root), manifest_count + 1)
         _, again = self.build(root=root, out=self.tmp / 'out3')

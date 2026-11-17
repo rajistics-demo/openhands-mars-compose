@@ -24,15 +24,15 @@ Raw logs remain private; this document and `test-results/README.md` contain sani
 
 See [VALIDATION.md](VALIDATION.md) and the sanitized `evidence/` receipts. Final measured **1/5/10 independent native runs passed**, with concurrent provider/process proof, persisted passing outcomes and automatic provider cleanup for every run. Two portable stock-image builds passed. The live evaluation's additive MARS schema used its existing migration chain; a complete fresh customer deployment is still a qualification step.
 
-HTTP, SDK WebSocket first-frame authentication/reconnect, callbacks, and plain pause/resume with workspace and synthetic memory survival were also observed earlier. No checkpoint durability or model inference is claimed.
+HTTP, SDK WebSocket first-frame authentication/reconnect, callbacks, and plain pause/resume with workspace and synthetic memory survival were also observed earlier. A real Gemini conversation and a post-reload follow-up subsequently passed on one MARS VM; see [interactive LLM validation](LLM_VALIDATION.md). No checkpoint durability is claimed.
 
 ## Not validated / remaining integration blockers
 
 0. **Earlier failures remain unexplained:** the withdrawn nested-polling ten-run attempt failed, and one earlier callback hit a guest proxy CONNECT 503. Final ordinary-job cohorts passed; longer soak and failure/recovery qualification remain. See VALIDATION.md.
 1. **Fresh customer deployment not yet qualified.** Both portable stock-image builds passed on AWS. Customer onboarding, TLS routing, account-specific template access and deployment against a fresh database still require the INSTALL.md checks.
 2. **No MARS runtime image pin.** `AGENT_KIND_CUSTOM` is rejected on Private Beta. The OpenHands Agent Server 1.60.1 digest is verified in the registry only. The DO follow-up is in VERSIONS.md.
-3. **Agent Server version skew:** builtin 1.58.2 against Enterprise SDK 1.60.1. Only the deterministic smoke test exercises it.
-4. **No LLM inference validated.** There is no model or capacity qualification, and no production qualification.
+3. **Agent Server version skew:** builtin 1.58.2 against Enterprise SDK 1.60.1. The deterministic smoke test and one real Gemini conversation with a follow-up exercise it; broader SDK compatibility is unqualified.
+4. **Limited LLM coverage.** One Gemini conversation and a post-reload follow-up passed on one VM. Multi-model, concurrent inference, long-running workload and production qualification remain.
 5. **No checkpoint API integration.** Expired session keys require a fresh VM (seamless rotation is unqualified).
 6. **Shared bootstrap init secret.** The run key is owner-scoped rather than callback-only. Egress includes the platform default hosts. See SECURITY_REVIEW.md, part C.
 7. **Unresolved create intents** need manual reconciliation by an operator (ROLLBACK.md).
@@ -51,4 +51,10 @@ HTTP, SDK WebSocket first-frame authentication/reconnect, callbacks, and plain p
 
 The versioned evaluation bundle includes a staged Python installer, a checksum-verified fetch of the official Enterprise Compose file, local image builds and guarded baseline/MARS activation. The customer README and INSTALL guide cover prerequisites and private configuration. INTEGRATION_CONTRACT maps DigitalOcean's recommendations to implemented behavior and outstanding qualifications. INSTALL_MANUAL preserves the existing-stack overlay path.
 
-The setup/release suite passed 46 tests. Independent clean-directory preparation passed against the real Docker/Compose CLI without starting containers. Full fresh-install onboarding and end-to-end MARS validation remain customer qualification steps; prior live 1/5/10 evidence describes the existing evaluation deployment.
+The current setup/release suite passed 57 tests. Independent clean-directory preparation passed against the real Docker/Compose CLI without starting containers. Full fresh-install onboarding and end-to-end MARS validation remain customer qualification steps; prior live 1/5/10 evidence describes the existing evaluation deployment.
+
+## Interactive conversation follow-up — 2026-11-17
+
+The MARS readiness probe now sends the existing session key to the authenticated gateway's `/alive` route. Other providers retain the stock shared probe. Nine new regression tests cover real shared startup polling, authenticated gateway routing, refused/missing keys, boot retries and diagnostic privacy. The final focused MARS set passed 63 tests on PostgreSQL 16; a broader relevant regression run passed 390 tests before the final diagnostics capture-fixture adjustment. The final 63-test run includes that adjustment. These counts are separate from the earlier baseline suites above.
+
+The installer adds optional exact `MARS_LLM_EGRESS_HOSTS` entries to the rendered MARS manifest only. The approved new immutable environment config and one VM were used for native conversation startup, actual model inference, terminal/file tools, independent provider-side file verification, and a successful UI follow-up after reload. Initial network-policy and hosted-budget failures were retained; they are not counted as passes. Details and limitations are in [LLM_VALIDATION.md](LLM_VALIDATION.md).
