@@ -1,0 +1,298 @@
+{
+  "observed_on": "2026-11-17",
+  "scope": "Compose control plane; deterministic remote jobs, 64 MiB touched per VM and 120 second hold; no LLM inference",
+  "host_vcpus": 4,
+  "host_memory_gib": 15.334,
+  "sample_interval_target_seconds": 5,
+  "observer_overhead_included": true,
+  "baseline": {
+    "window_start_utc": "2026-11-17T12:50:32+00:00",
+    "window_end_utc": "2026-11-17T12:52:07+00:00",
+    "samples": 20,
+    "host_cpu_percent": {
+      "median": 5.785,
+      "p95": 8.018,
+      "max": 10.086
+    },
+    "host_used_memory_gib": {
+      "median": 3.887,
+      "max": 3.905
+    },
+    "host_iowait_percent_max": 0.151,
+    "external_network_kib_per_second_p95": {
+      "receive": 1.729,
+      "transmit": 25.783
+    },
+    "max_pg_connections": 29,
+    "pg_connection_limits": [
+      100
+    ],
+    "database_samples": 14,
+    "max_container_restart_count": 0,
+    "services": {
+      "worker": {
+        "docker_cpu_percent_p95": 0.18,
+        "memory_mib_max": 428.5
+      },
+      "app": {
+        "docker_cpu_percent_p95": 9.82,
+        "memory_mib_max": 562.5
+      },
+      "mars-gateway": {
+        "docker_cpu_percent_p95": 0.13,
+        "memory_mib_max": 433.1
+      },
+      "automation-server": {
+        "docker_cpu_percent_p95": 0.36,
+        "memory_mib_max": 396.6
+      },
+      "https": {
+        "docker_cpu_percent_p95": 0.13,
+        "memory_mib_max": 18.15
+      },
+      "db": {
+        "docker_cpu_percent_p95": 0.07,
+        "memory_mib_max": 137.8
+      },
+      "redis": {
+        "docker_cpu_percent_p95": 0.26,
+        "memory_mib_max": 15.87
+      },
+      "proxy": {
+        "docker_cpu_percent_p95": 0.13,
+        "memory_mib_max": 43.4
+      },
+      "canvas-server": {
+        "docker_cpu_percent_p95": 10.33,
+        "memory_mib_max": 102.2
+      }
+    }
+  },
+  "cohorts": {
+    "five": {
+      "window_start_utc": "2026-11-17T12:42:57+00:00",
+      "window_end_utc": "2026-11-17T12:46:07+00:00",
+      "samples": 39,
+      "host_cpu_percent": {
+        "median": 5.757,
+        "p95": 8.014,
+        "max": 8.812
+      },
+      "host_used_memory_gib": {
+        "median": 3.838,
+        "max": 3.856
+      },
+      "host_iowait_percent_max": 0.05,
+      "external_network_kib_per_second_p95": {
+        "receive": 13.722,
+        "transmit": 13.699
+      },
+      "max_pg_connections": 22,
+      "pg_connection_limits": [
+        100
+      ],
+      "database_samples": 26,
+      "max_container_restart_count": 0,
+      "services": {
+        "worker": {
+          "docker_cpu_percent_p95": 0.2,
+          "memory_mib_max": 428.4
+        },
+        "app": {
+          "docker_cpu_percent_p95": 9.03,
+          "memory_mib_max": 550.9
+        },
+        "mars-gateway": {
+          "docker_cpu_percent_p95": 0.27,
+          "memory_mib_max": 426.0
+        },
+        "automation-server": {
+          "docker_cpu_percent_p95": 9.05,
+          "memory_mib_max": 396.8
+        },
+        "https": {
+          "docker_cpu_percent_p95": 0.44,
+          "memory_mib_max": 16.6
+        },
+        "db": {
+          "docker_cpu_percent_p95": 0.3,
+          "memory_mib_max": 116.8
+        },
+        "redis": {
+          "docker_cpu_percent_p95": 2.92,
+          "memory_mib_max": 19.33
+        },
+        "proxy": {
+          "docker_cpu_percent_p95": 0.1,
+          "memory_mib_max": 42.43
+        },
+        "canvas-server": {
+          "docker_cpu_percent_p95": 6.16,
+          "memory_mib_max": 99.62
+        }
+      },
+      "native_runs": 5,
+      "completed": 5,
+      "outcomes_passed": 5,
+      "verified_simultaneously_live": 5,
+      "create_to_job_start_seconds": {
+        "median": 27.284,
+        "max": 31.475
+      },
+      "create_to_completion_seconds": {
+        "median": 149.503,
+        "max": 153.565
+      }
+    },
+    "ten": {
+      "window_start_utc": "2026-11-17T12:47:22+00:00",
+      "window_end_utc": "2026-11-17T12:50:12+00:00",
+      "samples": 35,
+      "host_cpu_percent": {
+        "median": 6.242,
+        "p95": 9.577,
+        "max": 10.955
+      },
+      "host_used_memory_gib": {
+        "median": 3.88,
+        "max": 3.902
+      },
+      "host_iowait_percent_max": 0.151,
+      "external_network_kib_per_second_p95": {
+        "receive": 31.94,
+        "transmit": 71.787
+      },
+      "max_pg_connections": 29,
+      "pg_connection_limits": [
+        100
+      ],
+      "database_samples": 22,
+      "max_container_restart_count": 0,
+      "services": {
+        "worker": {
+          "docker_cpu_percent_p95": 0.22,
+          "memory_mib_max": 428.5
+        },
+        "app": {
+          "docker_cpu_percent_p95": 9.14,
+          "memory_mib_max": 560.9
+        },
+        "mars-gateway": {
+          "docker_cpu_percent_p95": 0.14,
+          "memory_mib_max": 433.3
+        },
+        "automation-server": {
+          "docker_cpu_percent_p95": 9.99,
+          "memory_mib_max": 406.0
+        },
+        "https": {
+          "docker_cpu_percent_p95": 1.04,
+          "memory_mib_max": 17.74
+        },
+        "db": {
+          "docker_cpu_percent_p95": 5.74,
+          "memory_mib_max": 139.9
+        },
+        "redis": {
+          "docker_cpu_percent_p95": 0.26,
+          "memory_mib_max": 15.72
+        },
+        "proxy": {
+          "docker_cpu_percent_p95": 0.45,
+          "memory_mib_max": 43.34
+        },
+        "canvas-server": {
+          "docker_cpu_percent_p95": 10.61,
+          "memory_mib_max": 99.5
+        }
+      },
+      "native_runs": 10,
+      "completed": 10,
+      "outcomes_passed": 10,
+      "verified_simultaneously_live": 10,
+      "create_to_job_start_seconds": {
+        "median": 30.698,
+        "max": 33.562
+      },
+      "create_to_completion_seconds": {
+        "median": 153.298,
+        "max": 155.726
+      }
+    },
+    "single": {
+      "window_start_utc": "2026-11-17T12:52:17+00:00",
+      "window_end_utc": "2026-11-17T12:54:52+00:00",
+      "samples": 32,
+      "host_cpu_percent": {
+        "median": 5.586,
+        "p95": 7.402,
+        "max": 9.517
+      },
+      "host_used_memory_gib": {
+        "median": 3.88,
+        "max": 3.909
+      },
+      "host_iowait_percent_max": 0.05,
+      "external_network_kib_per_second_p95": {
+        "receive": 6.862,
+        "transmit": 13.757
+      },
+      "max_pg_connections": 29,
+      "pg_connection_limits": [
+        100
+      ],
+      "database_samples": 22,
+      "max_container_restart_count": 0,
+      "services": {
+        "worker": {
+          "docker_cpu_percent_p95": 0.19,
+          "memory_mib_max": 428.5
+        },
+        "app": {
+          "docker_cpu_percent_p95": 10.06,
+          "memory_mib_max": 561.2
+        },
+        "mars-gateway": {
+          "docker_cpu_percent_p95": 0.12,
+          "memory_mib_max": 433.6
+        },
+        "automation-server": {
+          "docker_cpu_percent_p95": 8.86,
+          "memory_mib_max": 406.8
+        },
+        "https": {
+          "docker_cpu_percent_p95": 0.02,
+          "memory_mib_max": 16.91
+        },
+        "db": {
+          "docker_cpu_percent_p95": 4.92,
+          "memory_mib_max": 138.2
+        },
+        "redis": {
+          "docker_cpu_percent_p95": 2.92,
+          "memory_mib_max": 16.05
+        },
+        "proxy": {
+          "docker_cpu_percent_p95": 0.08,
+          "memory_mib_max": 42.34
+        },
+        "canvas-server": {
+          "docker_cpu_percent_p95": 10.79,
+          "memory_mib_max": 99.53
+        }
+      },
+      "native_runs": 1,
+      "completed": 1,
+      "outcomes_passed": 1,
+      "verified_simultaneously_live": 1,
+      "create_to_job_start_seconds": {
+        "median": 20.844,
+        "max": 20.844
+      },
+      "create_to_completion_seconds": {
+        "median": 142.987,
+        "max": 142.987
+      }
+    }
+  }
+}

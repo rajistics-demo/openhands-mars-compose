@@ -1,0 +1,112 @@
+diff --git a/tests/unit/storage/test_api_key_store.py b/tests/unit/storage/test_api_key_store.py
+index 99b13c6..5ebdfa3 100644
+--- a/tests/unit/storage/test_api_key_store.py
++++ b/tests/unit/storage/test_api_key_store.py
+@@ -313,3 +313,107 @@ class TestApiKeyStoreSystemKeys:
+             result = await session.execute(select(ApiKey).filter(ApiKey.id == key_id))
+             key_record = result.scalars().first()
+             assert key_record is None
++
++
++class TestSystemApiKeyExpiry:
++    user_id = '5594c7b6-f959-4b81-92e9-b09c206f5081'
++
++    async def _record(self, async_session_maker, key):
++        async with async_session_maker() as session:
++            result = await session.execute(select(ApiKey).filter(ApiKey.key == key))
++            return result.scalars().one()
++
++    @pytest.mark.asyncio
++    async def test_new_key_stores_requested_deadline(
++        self, api_key_store, async_session_maker, create_org
++    ):
++        org_id = create_org(id=uuid.UUID(self.user_id)).id
++        deadline = datetime.now(UTC) + timedelta(hours=1)
++        with patch('storage.api_key_store.a_session_maker', async_session_maker):
++            key = await api_key_store.get_or_create_system_api_key(
++                user_id=self.user_id, org_id=org_id, name='run-1', expires_at=deadline
++            )
++        record = await self._record(async_session_maker, key)
++        assert record.expires_at == deadline.replace(tzinfo=None)
++
++    @pytest.mark.asyncio
++    async def test_reuse_can_shorten_but_never_extend(
++        self, api_key_store, async_session_maker, create_org
++    ):
++        org_id = create_org(id=uuid.UUID(self.user_id)).id
++        now = datetime.now(UTC)
++        first, shorter, longer = (now + timedelta(hours=h) for h in (2, 1, 3))
++        with patch('storage.api_key_store.a_session_maker', async_session_maker):
++            key = await api_key_store.get_or_create_system_api_key(
++                user_id=self.user_id, org_id=org_id, name='run-2', expires_at=first
++            )
++            again = await api_key_store.get_or_create_system_api_key(
++                user_id=self.user_id, org_id=org_id, name='run-2', expires_at=shorter
++            )
++            assert again == key
++            assert (await self._record(async_session_maker, key)).expires_at == (
++                shorter.replace(tzinfo=None)
++            )
++            third = await api_key_store.get_or_create_system_api_key(
++                user_id=self.user_id, org_id=org_id, name='run-2', expires_at=longer
++            )
++            legacy = await api_key_store.get_or_create_system_api_key(
++                user_id=self.user_id, org_id=org_id, name='run-2'
++            )
++        assert third == legacy == key
++        assert (await self._record(async_session_maker, key)).expires_at == (
++            shorter.replace(tzinfo=None)
++        )
++
++    @pytest.mark.asyncio
++    async def test_deadline_applies_to_existing_non_expiring_key(
++        self, api_key_store, async_session_maker, create_org
++    ):
++        org_id = create_org(id=uuid.UUID(self.user_id)).id
++        deadline = datetime.now(UTC) + timedelta(minutes=30)
++        with patch('storage.api_key_store.a_session_maker', async_session_maker):
++            key = await api_key_store.get_or_create_system_api_key(
++                user_id=self.user_id, org_id=org_id, name='automation'
++            )
++            assert (await self._record(async_session_maker, key)).expires_at is None
++            again = await api_key_store.get_or_create_system_api_key(
++                user_id=self.user_id,
++                org_id=org_id,
++                name='automation',
++                expires_at=deadline,
++            )
++        assert again == key
++        assert (await self._record(async_session_maker, key)).expires_at == (
++            deadline.replace(tzinfo=None)
++        )
++
++    @pytest.mark.asyncio
++    async def test_naive_deadline_is_treated_as_utc(
++        self, api_key_store, async_session_maker, create_org
++    ):
++        org_id = create_org(id=uuid.UUID(self.user_id)).id
++        deadline = (datetime.now(UTC) + timedelta(hours=1)).replace(tzinfo=None)
++        with patch('storage.api_key_store.a_session_maker', async_session_maker):
++            key = await api_key_store.get_or_create_system_api_key(
++                user_id=self.user_id, org_id=org_id, name='run-3', expires_at=deadline
++            )
++        assert (await self._record(async_session_maker, key)).expires_at == deadline
++
++    @pytest.mark.asyncio
++    async def test_past_deadline_is_rejected_without_creating_a_key(
++        self, api_key_store, async_session_maker, create_org
++    ):
++        org_id = create_org(id=uuid.UUID(self.user_id)).id
++        with patch('storage.api_key_store.a_session_maker', async_session_maker):
++            with pytest.raises(ValueError):
++                await api_key_store.get_or_create_system_api_key(
++                    user_id=self.user_id,
++                    org_id=org_id,
++                    name='run-4',
++                    expires_at=datetime.now(UTC) - timedelta(seconds=1),
++                )
++        async with async_session_maker() as session:
++            result = await session.execute(
++                select(ApiKey).filter(ApiKey.name == '__SYSTEM__:run-4')
++            )
++            assert result.scalars().first() is None

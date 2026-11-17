@@ -1,0 +1,28 @@
+diff --git a/openhands/automation/router.py b/openhands/automation/router.py
+index 5ff7ad9..df75e0e 100644
+--- a/openhands/automation/router.py
++++ b/openhands/automation/router.py
+@@ -1690,15 +1690,19 @@ async def complete_run(
+         # Task outcomes and blocking factors are agent/user-level result metadata;
+         # only SDK callback errors and system dispatch errors feed auto-disablement.
+         values["status_detail"] = None
++    run_metadata = dict(run.run_metadata or {})
+     if body.conversation_id:
+         finish_tool_response = await fetch_latest_finish_tool_response_for_run(
+             run, body.conversation_id
+         )
+         if finish_tool_response is not None:
+-            values["run_metadata"] = {
+-                **(run.run_metadata or {}),
+-                "finish_tool_response": finish_tool_response,
+-            }
++            run_metadata["finish_tool_response"] = finish_tool_response
++    if body.task_outcome is not None:
++        # Result metadata only: status_detail and auto-disablement above
++        # deliberately ignore it.
++        run_metadata["task_outcome"] = body.task_outcome
++    if run_metadata != (run.run_metadata or {}):
++        values["run_metadata"] = run_metadata
+ 
+     stmt = (
+         update(AutomationRun)

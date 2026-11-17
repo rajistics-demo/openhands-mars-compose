@@ -1,0 +1,71 @@
+diff --git a/openhands/app_server/sandbox/sandbox_store.py b/openhands/app_server/sandbox/sandbox_store.py
+index a005776..6dbbbdb 100644
+--- a/openhands/app_server/sandbox/sandbox_store.py
++++ b/openhands/app_server/sandbox/sandbox_store.py
+@@ -27,6 +27,7 @@ REMOTE_BACKEND = 'remote'
+ DOCKER_BACKEND = 'docker'
+ E2B_BACKEND = 'e2b'
+ K8S_AGENT_SANDBOX_BACKEND = 'k8s-agent-sandbox'
++DO_MARS_BACKEND = 'do-mars'
+ 
+ 
+ class LifecycleState(StrEnum):
+@@ -67,6 +68,12 @@ class StoredSandbox(Base):
+ 
+     __tablename__ = 'v1_remote_sandbox'
+     __table_args__ = (
++        Index(
++            'ix_sandbox_backend_provider_resource',
++            'backend',
++            'provider_resource_id',
++            unique=True,
++        ),
+         Index(
+             'ix_v1_remote_sandbox_backend_lifecycle_state',
+             'backend',
+@@ -103,6 +110,18 @@ class StoredSandbox(Base):
+     last_active_at: Mapped[datetime] = mapped_column(
+         UtcDateTime, server_default=func.now()
+     )
++    # Provider-scoped create-intent mapping (D4, do-mars only). NULL for every
++    # other backend and for do-mars rows adopted before this column existed.
++    # ``provider_create_intent_at`` is set when the row is written *before*
++    # the provider create call; ``provider_resource_id`` is set only after
++    # the provider's id for this row is confirmed (direct create response, or
++    # a single-match adoption after an ambiguous create). A row with intent
++    # set but no resource id is a create in flight or a crashed/ambiguous
++    # create awaiting reconciliation - see ``do_mars_sandbox_service``.
++    provider_resource_id: Mapped[str | None] = mapped_column(String, nullable=True)
++    provider_create_intent_at: Mapped[datetime | None] = mapped_column(
++        UtcDateTime, nullable=True
++    )
+ 
+ 
+ def sandbox_started_by(stored_sandbox: StoredSandbox) -> SandboxStartedBy | None:
+@@ -253,6 +272,26 @@ async def search_stored_sandboxes(
+     )
+ 
+ 
++async def get_pending_create_intents(
++    db_session: AsyncSession, backend: str, older_than: datetime
++) -> list[StoredSandbox]:
++    """Rows of ``backend`` whose provider create is unresolved past a bound.
++
++    Scoped strictly to one backend with both columns non-default, so it never
++    touches another provider's rows, nor a do-mars row created before these
++    columns existed (which has no intent timestamp to match on). Used only by
++    the do-mars reconciliation path (D4); not a generic lifecycle hook.
++    """
++    stmt = select(StoredSandbox).where(
++        StoredSandbox.backend == backend,
++        StoredSandbox.provider_create_intent_at.is_not(None),
++        StoredSandbox.provider_create_intent_at < older_than,
++        StoredSandbox.provider_resource_id.is_(None),
++    )
++    result = await db_session.execute(stmt)
++    return list(result.scalars().all())
++
++
+ async def get_credential_org_id(user_context: UserContext) -> UUID | None:
+     """Capture the launch org from authenticated or integration context."""
+     resolver_org_id = getattr(user_context, 'resolver_org_id', None)

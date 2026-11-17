@@ -1,0 +1,17 @@
+# Submit as manifest_yaml to the official MARS environment-config API/CLI.
+# Replace placeholders locally; never commit the rendered secret-bearing file.
+# Create a new config name per release. This uses the tested builtin harness;
+# it does not pin a runtime image digest (see docs/VERSIONS.md).
+name: openhands-enterprise-evaluation-release-1
+harness: openhands
+size: mars-2vcpu-4gb
+keep_warm: true
+egress:
+  - app.example.invalid
+  # Needed only for scripts that call their own public runtime gateway.
+  - runtime.example.invalid
+env:
+  OH_DEFERRED_INIT: 'true'
+  TMUX_TMPDIR: /tmp
+secrets:
+  OH_SECRET_KEY: '<same value as your init_api_key file>'

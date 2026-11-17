@@ -1,0 +1,54 @@
+diff --git a/storage/api_key_store.py b/storage/api_key_store.py
+index 9b3a8ce..4e7a55b 100644
+--- a/storage/api_key_store.py
++++ b/storage/api_key_store.py
+@@ -151,6 +151,7 @@ class ApiKeyStore:
+         user_id: str,
+         org_id: UUID,
+         name: str,
++        expires_at: datetime | None = None,
+     ) -> str:
+         """Get or create a system API key for a user on behalf of an internal service.
+ 
+@@ -161,7 +162,7 @@ class ApiKeyStore:
+         - Not visible to users in their API keys list (filtered by name prefix)
+         - Not deletable by users (protected by name prefix check)
+         - Associated with a specific org (not the user's current org)
+-        - Never expire (no expiration date)
++        - Keep legacy no-expiry behavior unless the internal caller requests a deadline
+ 
+         Args:
+             user_id: The ID of the user to create the key for
+@@ -171,6 +172,9 @@ class ApiKeyStore:
+         Returns:
+             The API key (existing or newly created)
+         """
++        requested_expiry = _as_utc_aware(expires_at)
++        if requested_expiry is not None and requested_expiry <= datetime.now(UTC):
++            raise ValueError('System run key expiry must be in the future')
+         system_key_name = self.make_system_key_name(name)
+ 
+         async with a_session_maker() as session:
+@@ -184,6 +188,11 @@ class ApiKeyStore:
+             existing_key = result.scalars().first()
+ 
+             if existing_key:
++                if requested_expiry is not None:
++                    stored_expiry = _as_utc_aware(existing_key.expires_at)
++                    if stored_expiry is None or stored_expiry > requested_expiry:
++                        existing_key.expires_at = requested_expiry.replace(tzinfo=None)
++                        await session.commit()
+                 if existing_key.expires_at:
+                     now = datetime.now(UTC)
+                     expires_at = _as_utc_aware(existing_key.expires_at)
+@@ -228,7 +237,9 @@ class ApiKeyStore:
+                 user_id=user_id,
+                 org_id=org_id,
+                 name=system_key_name,
+-                expires_at=None,  # System keys never expire
++                expires_at=requested_expiry.replace(tzinfo=None)
++                if requested_expiry
++                else None,
+             )
+             session.add(key_record)
+             await session.commit()

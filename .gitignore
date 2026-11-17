@@ -1,0 +1,12 @@
+.env
+*.env
+!*.env.example
+secrets/
+.private/
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+artifacts/
+
+.ruff_cache/

@@ -1,0 +1,14 @@
+diff --git a/openhands/automation/backends/cloud.py b/openhands/automation/backends/cloud.py
+index 019bc1a..712830d 100644
+--- a/openhands/automation/backends/cloud.py
++++ b/openhands/automation/backends/cloud.py
+@@ -518,7 +518,8 @@ class CloudSandboxBackend(ExecutionBackend):
+             )
+         return {
+             "OPENHANDS_API_KEY": self._api_key,
+-            "OPENHANDS_CLOUD_API_URL": self.api_url,
++            "OPENHANDS_CLOUD_API_URL": get_config().service.sandbox_openhands_api_url
++            or self.api_url,
+             # The presets pick their workspace from this. Cloud runs never
+             # get AGENT_SERVER_URL; scripts read it as a local Agent Canvas.
+             "AUTOMATION_RUN_MODE": "cloud",

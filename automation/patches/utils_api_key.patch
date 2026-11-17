@@ -1,0 +1,27 @@
+diff --git a/openhands/automation/utils/api_key.py b/openhands/automation/utils/api_key.py
+index 3e258b0..2a6ad20 100644
+--- a/openhands/automation/utils/api_key.py
++++ b/openhands/automation/utils/api_key.py
+@@ -1,6 +1,7 @@
+ """API key utilities for automation runs."""
+ 
+ import logging
++from datetime import UTC, datetime, timedelta
+ from typing import TYPE_CHECKING
+ 
+ import httpx
+@@ -63,7 +64,13 @@ async def get_api_key_for_automation_run(run: "AutomationRun") -> str:
+         "Content-Type": "application/json",
+     }
+ 
+-    payload = {"name": "automation"}
++    payload: dict[str, str] = {"name": "automation"}
++    if settings.run_key_ttl_seconds:
++        # Keep one stable name per run across retries. Expiry is never extended
++        # by re-fetching the key: Enterprise preserves the earlier deadline.
++        payload["name"] = f"automation-run-{run.id}"
++        expiry = datetime.now(UTC) + timedelta(seconds=settings.run_key_ttl_seconds)
++        payload["expires_at"] = expiry.isoformat()
+ 
+     try:
+         async with httpx.AsyncClient(timeout=30.0) as client:

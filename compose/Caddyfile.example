@@ -1,0 +1,12 @@
+# Host-installed Caddy example. Replace both placeholder hostnames.
+# These ports are host loopback bindings; do not publish the raw services.
+# Set the stock stack's WEB_HOST / WEB_URL and Canvas cloud origin to the
+# public app origin, as described in the official Compose HTTPS guide.
+# No access-log directive: legacy runtime WS queries can contain session keys.
+app.example.invalid {
+    reverse_proxy 127.0.0.1:9043
+}
+
+runtime.example.invalid {
+    reverse_proxy 127.0.0.1:8100
+}

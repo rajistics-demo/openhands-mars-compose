@@ -1,0 +1,81 @@
+{
+  "observed_at_utc": "2026-11-17T12:48:06+00:00",
+  "native_running": 10,
+  "provider_ready": 10,
+  "live_job_processes": 10,
+  "probe_window_seconds": 0.597761869430542,
+  "source_sha256": "6209e405113b905940bfe1121873cbb5a8cd63cee904675ebd275857b2166561",
+  "labels": "VM01-VM10 are redacted labels",
+  "rows": [
+    {
+      "label": "VM 01",
+      "native_status": "RUNNING",
+      "provider_status": "READY",
+      "job_process_alive": true,
+      "workspace_check": "passed"
+    },
+    {
+      "label": "VM 02",
+      "native_status": "RUNNING",
+      "provider_status": "READY",
+      "job_process_alive": true,
+      "workspace_check": "passed"
+    },
+    {
+      "label": "VM 03",
+      "native_status": "RUNNING",
+      "provider_status": "READY",
+      "job_process_alive": true,
+      "workspace_check": "passed"
+    },
+    {
+      "label": "VM 04",
+      "native_status": "RUNNING",
+      "provider_status": "READY",
+      "job_process_alive": true,
+      "workspace_check": "passed"
+    },
+    {
+      "label": "VM 05",
+      "native_status": "RUNNING",
+      "provider_status": "READY",
+      "job_process_alive": true,
+      "workspace_check": "passed"
+    },
+    {
+      "label": "VM 06",
+      "native_status": "RUNNING",
+      "provider_status": "READY",
+      "job_process_alive": true,
+      "workspace_check": "passed"
+    },
+    {
+      "label": "VM 07",
+      "native_status": "RUNNING",
+      "provider_status": "READY",
+      "job_process_alive": true,
+      "workspace_check": "passed"
+    },
+    {
+      "label": "VM 08",
+      "native_status": "RUNNING",
+      "provider_status": "READY",
+      "job_process_alive": true,
+      "workspace_check": "passed"
+    },
+    {
+      "label": "VM 09",
+      "native_status": "RUNNING",
+      "provider_status": "READY",
+      "job_process_alive": true,
+      "workspace_check": "passed"
+    },
+    {
+      "label": "VM 10",
+      "native_status": "RUNNING",
+      "provider_status": "READY",
+      "job_process_alive": true,
+      "workspace_check": "passed"
+    }
+  ]
+}

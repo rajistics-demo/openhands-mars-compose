@@ -1,0 +1,125 @@
+# MARS overlay for the stock Enterprise 1.88.0 docker-compose.yml.
+#
+#   docker compose -f docker-compose.yml -f /path/to/mars-package/compose/docker-compose.mars.yml \
+#     --env-file /path/to/mars.env up -d
+#
+# The Compose host keeps the control plane (app, worker, automation-server,
+# canvas, proxy, db, redis). Sandboxes run as DigitalOcean MARS VMs; nothing
+# here starts sandbox containers. `!override` / `!reset` need Docker Compose
+# v2.24.4 or newer. Service names match the stock 1.88.0 file; adjust them if
+# your Compose file differs.
+#
+# Two gateways are easy to confuse:
+# - mars-gateway (this file) is the RUNTIME TCP gateway: authenticated HTTP/WS
+#   from browsers/Automation to one sandbox's Agent Server (port 8000) over a
+#   DO port-forward. It carries no model traffic.
+# - An LLM gateway/proxy (LiteLLM or your provider) is unrelated and is not
+#   added, removed or reconfigured here. Existing model/provider settings stay
+#   exactly as in your base file.
+
+x-mars-secrets: &mars-secrets
+  - mars_team_token
+  - mars_session_signing_key
+  - mars_init_api_key
+
+x-mars-env: &mars-env
+  OH_SANDBOX_KIND: openhands.app_server.sandbox.do_mars_sandbox_service.DoMarsSandboxServiceInjector
+  OH_SANDBOX_SPEC_KIND: openhands.app_server.sandbox.do_mars_spec_service.DoMarsSpecServiceInjector
+  DO_MARS_CONFIG_ID: ${DO_MARS_CONFIG_ID:?set DO_MARS_CONFIG_ID}
+  DO_MARS_GATEWAY_URL: ${DO_MARS_GATEWAY_URL:?set DO_MARS_GATEWAY_URL}
+  DO_MARS_CALLBACK_URL: ${DO_MARS_CALLBACK_URL:?set DO_MARS_CALLBACK_URL}
+  DO_MARS_SESSION_TTL_SECONDS: ${DO_MARS_SESSION_TTL_SECONDS:-28800}
+  DO_MARS_TEAM_TOKEN_FILE: /run/secrets/mars_team_token
+  DO_MARS_SESSION_SIGNING_KEY_FILE: /run/secrets/mars_session_signing_key
+  DO_MARS_INIT_API_KEY_FILE: /run/secrets/mars_init_api_key
+  # Optional: lets the app reach mars-gateway on the Compose network instead
+  # of hairpinning through its public origin.
+  DO_MARS_INTERNAL_URL: ${DO_MARS_INTERNAL_URL:-http://mars-gateway:8100}
+  OH_SANDBOX_MAX_NUM_SANDBOXES: ${MARS_MAX_SANDBOXES:-10}
+  OH_SANDBOX_LIFECYCLE_IDLE_SECONDS: ${OH_SANDBOX_LIFECYCLE_IDLE_SECONDS:-1800}
+
+services:
+  app:
+    image: ${MARS_APP_IMAGE:?build docker/enterprise.Dockerfile and set MARS_APP_IMAGE}
+    environment:
+      <<: *mars-env
+    secrets: *mars-secrets
+    # Drop the Docker socket: MARS hosts jobs, the app starts no containers.
+    volumes: !override
+      - app-filestore:/.openhands
+
+  worker:
+    image: ${MARS_APP_IMAGE:?build docker/enterprise.Dockerfile and set MARS_APP_IMAGE}
+    environment:
+      <<: *mars-env
+    secrets: *mars-secrets
+    volumes: !override
+      - app-filestore:/.openhands
+
+  automation-server:
+    image: ${MARS_AUTOMATION_IMAGE:?build docker/automation.Dockerfile and set MARS_AUTOMATION_IMAGE}
+    environment:
+      # Native completion callbacks must dial out to a public Enterprise origin.
+      # The stock http://proxy value is only reachable on the Compose network.
+      AUTOMATION_BASE_URL: ${DO_MARS_CALLBACK_URL:?set DO_MARS_CALLBACK_URL}
+      # Must be empty for MARS: the stock value rewrites sandbox URLs to the
+      # Docker-only proxy, which a MARS VM cannot reach.
+      AUTOMATION_SANDBOX_INTERNAL_URL: ''
+      # Guest-facing Enterprise API origin exported to run scripts as
+      # OPENHANDS_CLOUD_API_URL; service-side calls stay on the private URL.
+      AUTOMATION_SANDBOX_OPENHANDS_API_URL: ${AUTOMATION_SANDBOX_OPENHANDS_API_URL:?set AUTOMATION_SANDBOX_OPENHANDS_API_URL}
+      # Per-run expiring keys (seconds, max 86400). 0 restores the stock
+      # shared non-expiring key. The key is owner-scoped, not callback-only.
+      AUTOMATION_RUN_KEY_TTL_SECONDS: ${AUTOMATION_RUN_KEY_TTL_SECONDS:-3600}
+
+  mars-gateway:
+    image: ${MARS_APP_IMAGE:?build docker/enterprise.Dockerfile and set MARS_APP_IMAGE}
+    user: openhands
+    entrypoint: []
+    # Access logs stay off: legacy WS clients may put the session key in the query.
+    command:
+      - uvicorn
+      - openhands.app_server.sandbox.do_mars_proxy:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - '8100'
+      - --no-access-log
+      - --proxy-headers
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DB_HOST: db
+      DB_PORT: '5432'
+      DB_NAME: ${DB_NAME:-openhands}
+      # Use a role limited to column SELECT on v1_remote_sandbox;
+      # see docs/INSTALL.md "Gateway database role".
+      DB_USER: ${MARS_GATEWAY_DB_USER:-${DB_USER:-openhands}}
+      DB_PASS: ${MARS_GATEWAY_DB_PASS:-${DB_PASS:-openhands}}
+      DO_MARS_APP_ORIGIN: ${DO_MARS_APP_ORIGIN:?set DO_MARS_APP_ORIGIN}
+      DO_MARS_TEAM_TOKEN_FILE: /run/secrets/mars_team_token
+      DO_MARS_SESSION_SIGNING_KEY_FILE: /run/secrets/mars_session_signing_key
+    secrets:
+      - mars_team_token
+      - mars_session_signing_key
+    expose:
+      - '8100'
+    # Publish only behind your TLS terminator for the runtime hostname
+    # (DO_MARS_GATEWAY_URL). Bind to loopback by default.
+    ports:
+      - '127.0.0.1:${MARS_GATEWAY_HOST_PORT:-8100}:8100'
+    healthcheck:
+      test: ['CMD', 'python', '-c', "import socket; socket.create_connection(('127.0.0.1', 8100), 3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+secrets:
+  mars_team_token:
+    file: ${MARS_SECRETS_DIR:?set MARS_SECRETS_DIR}/do_team_token
+  mars_session_signing_key:
+    file: ${MARS_SECRETS_DIR:?set MARS_SECRETS_DIR}/session_signing_key
+  mars_init_api_key:
+    file: ${MARS_SECRETS_DIR:?set MARS_SECRETS_DIR}/init_api_key

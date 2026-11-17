@@ -1,0 +1,18 @@
+diff --git a/openhands/automation/config.py b/openhands/automation/config.py
+index 0f9c5cb..56b5d1d 100644
+--- a/openhands/automation/config.py
++++ b/openhands/automation/config.py
+@@ -705,6 +705,13 @@ class ServiceSettings(BaseSettings):
+     # If empty, falls back to http://localhost:{server_port} (dev only).
+     base_url: str = ""
+ 
++    # Cloud service calls stay on openhands_api_base_url (private). Only the
++    # URL exported to sandboxed scripts uses this optional public endpoint.
++    sandbox_openhands_api_url: str = ""
++    # Zero preserves legacy cached system keys; opted-in runs get unique keys
++    # with server-enforced expiration. Must cover execution and cleanup.
++    run_key_ttl_seconds: int = Field(default=0, ge=0, le=86400)
++
+     # Service
+     host: str = "0.0.0.0"
+     # Use "server_port" to avoid collision with Kubernetes service discovery
