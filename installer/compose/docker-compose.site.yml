@@ -1,0 +1,26 @@
+# Site overlay for the stock Enterprise 1.88.0 docker-compose.yml, copied into
+# the install directory by installer/mars_setup.py. Used for both the stock
+# baseline and MARS activation.
+#
+# - The stock proxy publishes ${APP_PORT} on every interface. This binds it to
+#   host loopback; your own TLS terminator serves the public app origin.
+# - CORS follows the public app origin (WEB_URL) instead of http://localhost.
+# WEB_HOST, WEB_URL and AGENT_CANVAS_LOCK_TO_CLOUD are stock variables and are
+# set in the installer-derived env file. `!override` needs Compose >= 2.24.4.
+
+services:
+  proxy:
+    ports: !override
+      - '127.0.0.1:${APP_PORT:?set APP_PORT}:80'
+
+  app:
+    environment:
+      PERMITTED_CORS_ORIGINS: ${WEB_URL:?set WEB_URL}
+
+  worker:
+    environment:
+      PERMITTED_CORS_ORIGINS: ${WEB_URL:?set WEB_URL}
+
+  automation-server:
+    environment:
+      AUTOMATION_CORS_ORIGINS: ${WEB_URL:?set WEB_URL}

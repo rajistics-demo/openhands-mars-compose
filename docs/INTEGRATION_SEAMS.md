@@ -20,10 +20,11 @@ flowchart LR
   E -->|Create, get, pause, resume, delete| C
   E -->|Private port-forward: deferred init| V
   G -->|Authenticated WSS carrying one TCP connection| V
-  V -->|HTTPS egress: authenticated callbacks and secrets| E
+  V -->|HTTPS egress: Agent Server callbacks and secrets| E
+  V -->|HTTPS egress: native completion callback| A
 ```
 
-The DO team token stays on the control plane. The guest receives a session-bound JWT and the native run's expiring owner key. Run status and event history remain in the control plane. The diagram shows logical responsibilities, with no site-specific infrastructure.
+The DO team token stays on the control plane. The guest receives a session-bound JWT and the native run's expiring owner key. Run status and persisted outcomes remain in the control plane; guest-only files and logs need explicit export before deletion. See the [technical contract](INTEGRATION_CONTRACT.md). The diagram shows logical responsibilities, with no site-specific infrastructure.
 
 | # | Seam | E2B pattern | MARS mapping in this package | Status |
 |---|---|---|---|---|

@@ -1,131 +1,147 @@
-# Install (evaluation)
+# Install the MARS integration
 
-In this setup the Docker Compose host runs the Enterprise control plane: app, worker, automation-server, canvas, proxy, PostgreSQL and Redis. The new `mars-gateway` service also runs there. DigitalOcean MARS hosts the jobs, with one VM per sandbox. The scope is evaluation only. This package does **not** qualify production, model or capacity use (see STATUS.md).
+Use the staged installer below for a **new, separate evaluation stack**. It downloads the official Enterprise 1.88.0 Compose file, prepares your private configuration and builds the two patched images locally. It does not provision a DO account, DNS/TLS or MARS environments, and it does not adopt another Compose project.
 
-## 0. Prerequisites
+If you already have an established stock Enterprise 1.88.0 installation, use the [manual overlay procedure](INSTALL_MANUAL.md) to preserve its existing file list, settings and backups. Do not point this fresh-install helper at that project's volumes or copy its generated credentials into an existing database.
 
-- **Licence and base images.** OpenHands Enterprise is licensed software (PolyForm Free Trial terms or your commercial agreement). You need registry access to `ghcr.io/openhands/enterprise-server:1.88.0`, plus a valid `OPENHANDS_LICENSE_KEY` if your agreement requires one. This package contains **only** the new MARS modules and narrow patches. It does not contain or redistribute the Enterprise product. Automation 1.30.0 is MIT.
-- An existing **stock 1.88.0** Compose install. Its database must be at alembic revision `213`.
-- Docker Engine with Compose **v2.24.4 or newer** (needed for `!override`).
-- **DigitalOcean MARS (Harness Runtime)** access:
-  - A **dedicated, custom-scoped team token**. It is read only by app, worker and gateway.
-  - An operator-created environment config using the **builtin `openhands` harness**. This is the tested path. Custom harness and digest pinning are rejected on Private Beta (VERSIONS.md).
-  - An egress allowlist set to the exact Enterprise callback hostname, with no wildcards. Expect the platform default hosts to be added to it.
-  - The deferred-init key that the config expects.
-- Two public HTTPS hostnames with TLS:
-  - the app origin, which is also the callback target and must be reachable from DO egress;
-  - a **separate** runtime origin for `mars-gateway`.
+## 1. Prepare the host and obtain the release
 
-  Turn off query-string access logging on the TLS terminator for the runtime hostname. `compose/Caddyfile.example` shows the two upstreams for host-installed Caddy. It assumes the stock app proxy listens on host loopback port 9043 and the gateway on 8100; adjust to your stock configuration. Configure DNS and normal TLS on your own host using the [official Compose guide](https://docs.openhands.dev/enterprise/docker-compose). The example has no query-bearing access logs. It is an illustrative configuration, not a separately live-qualified TLS deployment.
+Requirements: Linux, Python 3.11+, Docker Engine and Docker Compose 2.24.4+, Enterprise image/licence access, and DO MARS access. Use the normal host Docker daemon and the same operating-system account for installer commands and Docker registry login. Docker permissions must already be configured; the installer does not run `sudo` or install system packages.
 
-## Environment config
+Download the ZIP and checksum from [Releases](https://github.com/rajistics-demo/openhands-mars-compose/releases). Verify the downloaded archive's SHA-256 before extracting it, then enter its versioned directory. A checksum detects a changed download; obtain the release/checksum through a trusted channel because the checksum is not a digital signature. You can also use a checkout of the corresponding release tag.
 
-Use `templates/environment.example.yaml` with the official Harness Runtime console/CLI/API available to your DO account. Submit its contents as `manifest_yaml` when creating `/v2/agents/configs`; record the returned config ID in `mars.env`. The rendered manifest contains a bootstrap secret: keep it outside git. `OH_SECRET_KEY` must match the `init_api_key` secret file. The tested size is two vCPU / 4 GiB per guest. Set `keep_warm: true` so Enterprise owns idle/pause decisions.
-
-Allow the **exact** public callback/API hostname. If a script uses `--check-transport` to call its own public runtime URL, also allow that exact runtime hostname. Wildcards are unsupported; the platform adds default hosts. The live evaluation uses a runtime ingress that also forwards the required Enterprise API/callback routes, so one exact egress hostname serves both functions. The portable example keeps separate origins and requires operators to configure their TLS terminator accordingly. No VM inbound port is public.
-
-## 1. Preflight (read-only)
+For release `v1.88.0-mars1`, download `openhands-enterprise-mars-1.88.0-mars1.zip` and its `.zip.sha256` asset into the same directory:
 
 ```bash
-cp compose/mars.env.example /etc/openhands-mars/mars.env   # outside any git checkout; edit
-export ENTERPRISE_COMPOSE=/path/to/enterprise-1.88.0/docker-compose.yml
-scripts/preflight.sh "$ENTERPRISE_COMPOSE" /etc/openhands-mars/mars.env
+sha256sum -c openhands-enterprise-mars-1.88.0-mars1.zip.sha256
+unzip openhands-enterprise-mars-1.88.0-mars1.zip
+cd openhands-enterprise-mars-1.88.0-mars1
 ```
 
-The preflight checks:
+Provide two public HTTPS origins served by a TLS terminator you operate. The application and runtime origins must use different hostnames. [Caddyfile.example](../compose/Caddyfile.example) shows the upstreams: application port 9043 and runtime gateway port 8100 on host loopback. Adapt the example if you choose different ports.
 
-- this package against `SHA256SUMS`;
-- the Compose version;
-- the required variables, that every URL is HTTPS, and that the runtime and app hostnames differ;
-- that the secret files exist and are not world-readable;
-- that both base images are present and accept the patches (`mars_apply.py --check` runs inside each stock image with `--network none`);
-- that the database is at `213`, or already at `do_mars_001`.
+## 2. Prepare an installation directory
 
-## 2. Back up
-
-Take a PostgreSQL dump of the Enterprise database (`openhands`) **and** the Automation database (`automations`), and keep the original Compose file list. The package migration changes a backup's revision (see ROLLBACK.md, "Backups").
-
-## 3. Secrets
-
-Put three files in `MARS_SECRETS_DIR`:
-
-| File | Contents | Readers |
-|---|---|---|
-| `do_team_token` | DO MARS team token | app, worker, mars-gateway |
-| `session_signing_key` | Random key of at least 32 bytes for the per-session JWTs, for example `openssl rand -base64 48` | app, worker, mars-gateway |
-| `init_api_key` | Deferred-init key matching the MARS config | app, worker |
-
-Set permissions so the gateway user (uid 42420) can read them and others cannot, for example `chown root:42420` and `chmod 0640`. Never put these values in `mars.env`, in Compose files, in git or in a guest.
-
-## 4. Gateway database role (recommended)
-
-The gateway does a plain read of five columns and takes no row lock, so column `SELECT` is the only grant it needs. On PostgreSQL 17 this role could read those columns but was denied `session_api_key`, any `UPDATE` and `FOR SHARE` (verified in the PostgreSQL migration/role tests). Create the role **after** step 6, because the columns must exist first:
-
-```sql
-CREATE ROLE openhands_mars_gateway LOGIN PASSWORD '<from your secret store>';
-GRANT CONNECT ON DATABASE openhands TO openhands_mars_gateway;
-GRANT USAGE ON SCHEMA public TO openhands_mars_gateway;
-GRANT SELECT (id, backend, provider_resource_id, session_api_key_hash, lifecycle_state)
-  ON v1_remote_sandbox TO openhands_mars_gateway;
-```
-
-With this role, the plaintext and encrypted session-key columns cannot be read. If you skip this step, the gateway falls back to `DB_USER`.
-
-## 5. Build the images
+Run commands from the extracted bundle/checkout. Replace the example origins with your real public HTTPS names. Reserved placeholder hostnames are deliberately refused by the installer.
 
 ```bash
-docker build -f docker/enterprise.Dockerfile  -t registry.example.invalid/openhands-enterprise-mars:1.88.0-mars1 .
-docker build -f docker/automation.Dockerfile -t registry.example.invalid/openhands-automation-mars:1.30.0-mars1 .
+export MARS_INSTALL_DIR="$HOME/openhands-mars-eval"
+python3 installer/mars_setup.py init \
+  --dir "$MARS_INSTALL_DIR" \
+  --project openhands-mars-eval \
+  --app-origin https://app.your-domain.example \
+  --runtime-origin https://runtime.your-domain.example
+python3 installer/mars_setup.py fetch-compose --dir "$MARS_INSTALL_DIR"
 ```
 
-Each build fails without writing anything if the base differs from the release:
+Choose a new, unused Compose project name. The installer keeps an exact project/file-list record and refuses collisions with unrelated projects or volumes. It will not overwrite a changed stock Compose file or rotate your generated secrets on a normal repeated `init`.
 
-- a base file hash differs;
-- a hunk does not apply exactly;
-- the migration head is not `213`;
-- an overlay file already exists;
-- the result differs from `PATCHED_SHA256`.
+`fetch-compose` downloads only the official `docker-compose.yml` at the pinned Enterprise commit and verifies its size and SHA-256 before writing it. For an offline download, use `fetch-compose --dir "$MARS_INSTALL_DIR" --from-file /path/to/docker-compose.yml`; the same exact checksum is required.
 
-Record the resulting image IDs or digests, and set `MARS_APP_IMAGE` and `MARS_AUTOMATION_IMAGE` to them.
+Your installation directory contains:
 
-## 6. Migrate, then start
+| Path | Purpose |
+|---|---|
+| `site.env` | Public application/runtime origins, local ports and MARS environment config ID. |
+| `private/stack.env` | Generated database/service/webhook/KV secrets and an optional Enterprise licence key. Keep owner-only mode 0600. |
+| `private/compose.env` | Derived Compose settings. Edit `site.env`, then rerun `check`; do not edit this file directly. |
+| `secrets/` | DO team token, session signing key and bootstrap init key. The token file starts empty. |
+| `compose/` | Verified official Compose file plus copied integration/site overlays. |
+| `state.json` | Installation identity, file/phase state and build provenance. Keep it with this directory. |
 
-The stock Compose file sets `RUN_MIGRATIONS_ON_STARTUP=true`, so the app applies `do_mars_001` (213 → do_mars_001) when it starts. The migration is additive: two nullable columns plus one unique index.
+Keep the whole directory outside the integration checkout. Set your licence key in `private/stack.env` with a secure editor if your agreement requires it. Do not source these files, put secret values on the command line or paste rendered Compose configuration into a ticket. The helper parses configuration as data. Use plain `KEY=value` lines without quotes, interpolation or inline comments; the generated files show the supported keys.
+
+## 3. Verify the stock OpenHands baseline
 
 ```bash
-docker compose -f "$ENTERPRISE_COMPOSE" -f compose/docker-compose.mars.yml --env-file /etc/openhands-mars/mars.env up -d
-docker compose ... exec -T db psql -U openhands -d openhands -tAc 'select version_num from alembic_version'   # do_mars_001
+python3 installer/mars_setup.py check --dir "$MARS_INSTALL_DIR" --stage baseline
+python3 installer/mars_setup.py up --dir "$MARS_INSTALL_DIR" --baseline
+python3 installer/mars_setup.py status --dir "$MARS_INSTALL_DIR"
 ```
 
-The overlay makes these changes:
+Configure your application TLS origin to forward to `127.0.0.1:9043` (or your chosen application port). Wait for the health-checked services to become healthy. In your browser, complete normal Enterprise onboarding, configure your model and finish one normal conversation on the stock Docker backend. If the stock installation cannot start a conversation, resolve that baseline problem before enabling MARS.
 
-- It sets `OH_SANDBOX_KIND` and `OH_SANDBOX_SPEC_KIND` to the MARS injectors.
-- It removes the Docker socket from app and worker.
-- It empties `AUTOMATION_SANDBOX_INTERNAL_URL`, exports a public guest API origin, and sets `AUTOMATION_BASE_URL` to the public callback origin. Leaving the stock `http://proxy` callback base would strand completion callbacks inside the Compose network.
-- It adds `mars-gateway`, published only on `127.0.0.1:${MARS_GATEWAY_HOST_PORT}`. Point your TLS terminator for the runtime hostname at it.
+`check` validates configuration and local readiness; it does not prove onboarding, inference or an end-to-end MARS run. Starting the baseline is an explicit action. Application users, organizations, API keys and automations are not created by this installer.
 
-LLM and model settings are **not** changed. The MARS injector defaults to ten sandboxes per identity. This is admission policy, not a queue or autoscaler: exceeding the configured limit can pause that identity's oldest RUNNING sandbox. Existing conversations under the same identity compete with its automation runs. Keep evaluation work within the cap and confirm provider quotas before raising it.
-
-Keep the native run-key TTL longer than the maximum job timeout plus startup/cleanup headroom. The default 3600-second key supports this 120-second fixture; longer jobs need an explicitly chosen timeout and TTL (the opt-in run key is capped at 24 hours).
-
-## 7. Validate one native run (deterministic, no LLM)
+Back up both the `openhands` and `automations` databases before switching providers. To obtain the exact Compose prefix for private operator commands:
 
 ```bash
-export OPENHANDS_HOST=https://app.example.invalid
+python3 installer/mars_setup.py compose-command --dir "$MARS_INSTALL_DIR" --stage baseline
+```
+
+Append your normal `exec -T db pg_dump ...` backup command to that displayed prefix and save dumps in a protected directory outside git. Preserve the original Compose file list and generated site secrets. The installer does not make or verify database backups for you. See [rollback and backup compatibility](ROLLBACK.md).
+
+## 4. Configure your MARS environment and secrets
+
+The init step generated a session signing key and a bootstrap init key locally. It did not send them to DO. Render the MARS environment manifest **before** changing secret-file ownership:
+
+```bash
+python3 installer/mars_setup.py render-env-spec --dir "$MARS_INSTALL_DIR"
+```
+
+The resulting `private/environment.yaml` contains the bootstrap secret and exact application/runtime egress hosts. Keep it private. Use the official DO console/CLI/API available to your account to create an environment config from this manifest. This package makes no MARS API calls during setup. Give the config a new release-specific name instead of changing an existing config in place.
+
+Set `DO_MARS_CONFIG_ID` in `site.env` to the returned config UUID. Put **your own DO team token** into `secrets/do_team_token` using a secure editor. Do not copy credentials from the original evaluation installation.
+
+The evaluated manifest uses the builtin `openhands` harness, two vCPUs/four GiB per guest, deferred initialization and `keep_warm: true`. Its bootstrap `OH_SECRET_KEY` must match `secrets/init_api_key`. MARS adds platform/adapter hosts to the allowlist; it is not limited literally to the listed application hosts. See [the technical contract](INTEGRATION_CONTRACT.md) for the assumptions and account-specific image-pinning limitation.
+
+On Linux, the runtime gateway runs as uid/gid 42420. Keep the secret directory owned by the operating-system account that runs the installer so that account can inspect file metadata; change its group, not its owner. Arrange the mounted secret files so it can read the DO token and signing key, without making them world-readable. For the default filenames created by `init`:
+
+```bash
+sudo chgrp 42420 "$MARS_INSTALL_DIR/secrets"
+sudo chmod 0750 "$MARS_INSTALL_DIR/secrets"
+sudo chown root:42420 "$MARS_INSTALL_DIR/secrets/do_team_token" \
+  "$MARS_INSTALL_DIR/secrets/session_signing_key"
+sudo chmod 0640 "$MARS_INSTALL_DIR/secrets/do_team_token" \
+  "$MARS_INSTALL_DIR/secrets/session_signing_key"
+```
+
+App and worker use the stock root entrypoint and read the bootstrap file. The DO token and signing key stay on the control plane. The bootstrap value is shared with the MARS environment initialization path by design. Do not store credentials in guest workspace artifacts.
+
+The initial evaluation gateway uses the existing application database role so first activation does not depend on a role whose table grants cannot exist before migration. For a column-read-only gateway role, follow the [manual role setup](INSTALL_MANUAL.md#4-gateway-database-role-recommended) **after** `do_mars_001` is applied, then set `MARS_GATEWAY_DB_USER` / `MARS_GATEWAY_DB_PASS` in `private/stack.env` and rerun checks. That least-privilege follow-up is not performed automatically.
+
+## 5. Build and activate MARS
+
+```bash
+python3 installer/mars_setup.py build --dir "$MARS_INSTALL_DIR"
+python3 installer/mars_setup.py check --dir "$MARS_INSTALL_DIR" --stage mars
+python3 installer/mars_setup.py up --dir "$MARS_INSTALL_DIR" --mars \
+  --baseline-verified --backup-confirmed
+python3 installer/mars_setup.py status --dir "$MARS_INSTALL_DIR"
+```
+
+The two flags are your explicit confirmation that you completed the stock conversation and took the database backups. The installer cannot make that claim on your behalf. It refuses an unsupported migration revision rather than stamping, downgrading or rebasing the database.
+
+The build starts from the digest-pinned official Enterprise/Automation images and applies the hash-checked patches. Images remain local; no registry push occurs. Activation adds `mars-gateway`, switches app/worker/Automation to those local images and applies the additive Enterprise migration `213 → do_mars_001` through normal application startup.
+
+Configure the runtime TLS origin to forward to `127.0.0.1:8100` (or your chosen gateway port). Disable query-string access logging there because supported WebSocket clients may carry session authentication in the query. Wait for the application, Automation service and gateway to become healthy, and verify `alembic_version` is `do_mars_001`.
+
+Do not use `up --baseline` as a rollback after MARS activation. Stock 1.88.0 cannot start against a database stamped `do_mars_001`; follow [ROLLBACK.md](ROLLBACK.md) using the MARS image and your backups.
+
+## 6. Run the native validation
+
+Create an org-bound API key through your installation's normal UI, for the intended evaluation user and organization. Keep it short-lived with enough time for the test. Do not put it in shell history or the release directory.
+
+```bash
+export OPENHANDS_HOST=https://app.your-domain.example
 export OPENHANDS_ORG_ID='<evaluation-org-id>'
 export OPENHANDS_EXPECTED_EMAIL='<evaluation-user-email>'
-# Set OPENHANDS_API_KEY securely in this shell; do not put it in a command history.
+# Set OPENHANDS_API_KEY securely in this shell.
 python3 validation/run_native_validation.py --runs 1
-# After the single run passes:
+# After it passes, and within your account's quota:
 python3 validation/run_native_validation.py --runs 10
 ```
 
-With `--runs 1`, the script runs one inactive automation and one native run on one MARS VM. Each run:
+Each dispatch runs an ordinary native job in its assigned VM. The validator checks completion and persisted `task_outcome.passed`; the native dispatcher cleans up the VM. It retains an inactive definition and run history, and enables no schedule. Verify cleanup in DO as well. Save its output outside git because it contains private resource identifiers.
 
-1. computes `sum(x*x for x in range(10000)) == 333283335000`;
-2. touches 64 MiB of RAM, writes a file in `/workspace`, holds for 120 s, and verifies both;
-3. sends the native completion callback with `task_outcome`.
+The default cap is ten sandboxes per identity. Existing conversations under that identity compete with automation runs; exceeding the cap can pause the oldest running sandbox. This is not a queue or autoscaler. Keep run-key expiry longer than job timeout plus startup/cleanup headroom. The default one-hour run key supports the included two-minute fixture; it does not qualify arbitrary long-running workloads.
 
-It exits 0 only if the run is `COMPLETED` and `run_metadata.task_outcome.passed` is true, and retains the inactive automation and its history. The dispatcher cleans up its sandbox.
+The validator performs no LLM inference. Canvas 1.35.0 shows native completion status but does not render the persisted custom-script `task_outcome`; inspect `run_metadata.task_outcome` through the runs API. Full guest logs and workspace files disappear on VM deletion unless separately exported.
 
-**Known UI gap (reported by the coordinator, not changed here):** the released Canvas 1.35.0 run display reads `run_metadata.finish_tool_response`, not `run_metadata.task_outcome`. A custom-script native run therefore shows "Successful" with "No task outcome reported" even though `task_outcome` is persisted. Inspect it with `GET /api/automation/v1/{automation_id}/runs` (field `run_metadata.task_outcome`) or a read-only query on the Automation database. The run history is retained; guest VM logs are gone once the VM is cleaned up. Use `--runs 5` or `--runs 10` for independent standard dispatches on one inactive definition. The driver observes native RUNNING counts and validates outcomes; verify provider states/processes separately for a stronger concurrency claim. Its output contains private run IDs and must be saved outside git.
+## Troubleshooting and stopping
+
+- A failed check names the setting or prerequisite; repair that condition before activation. Do not bypass a version/hash refusal.
+- Use `status` and the displayed `compose-command` prefix to inspect your own services. Logs and `docker compose config` can contain secrets; keep raw output private.
+- Disable automations and let jobs finish, or cancel them, before shutting down the control plane. Delete owned MARS sandboxes through Enterprise and verify provider cleanup so remote VMs are not left running.
+- Ordinary `docker compose down` retains volumes. Do not use `down -v` on a stack whose data you need.
+- This installer prepares a fresh evaluation, not a migration tool for a customized or newer Enterprise deployment. See [versions](VERSIONS.md), [security findings](SECURITY_REVIEW.md) and [current qualification status](STATUS.md).

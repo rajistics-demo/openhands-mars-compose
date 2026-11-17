@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "package_version": "1.88.0-mars1",
+  "enterprise": {
+    "version": "1.88.0",
+    "commit": "c6191be5fb66e5ed6472062d9f6a554b58570d97",
+    "compose": {
+      "url": "https://raw.githubusercontent.com/OpenHands/enterprise/c6191be5fb66e5ed6472062d9f6a554b58570d97/docker-compose.yml",
+      "sha256": "d17ec0f72978b50f0d1df666e9ad8c2e7cdd9b2938601b52b3a4dcfb97d7ac55",
+      "size": 9539
+    },
+    "base_image": "ghcr.io/openhands/enterprise-server:1.88.0@sha256:cc67d10163e9e466b65d7a6e765a020fcc23ca036e78c6a6d846c458d1e2d9eb",
+    "migration_base": "213",
+    "migration_package": "do_mars_001"
+  },
+  "automation": {
+    "version": "1.30.0",
+    "commit": "04d93d5",
+    "base_image": "ghcr.io/openhands/automation:1.30.0@sha256:fb722b6fcde1a7fa67a15c40eb83af0ca23f1c111d0bc745f3b77a8b1bd33afa"
+  },
+  "local_images": {
+    "app": "openhands-enterprise-mars:1.88.0-mars1",
+    "automation": "openhands-automation-mars:1.30.0-mars1"
+  },
+  "requirements": {
+    "python": "3.11",
+    "docker_compose": "2.24.4"
+  },
+  "mars": {
+    "max_sandboxes_per_identity": 10,
+    "gateway_uid": 42420,
+    "gateway_gid": 42420
+  }
+}

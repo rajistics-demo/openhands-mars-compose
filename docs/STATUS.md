@@ -46,3 +46,9 @@ HTTP, SDK WebSocket first-frame authentication/reconnect, callbacks, and plain p
 - The unpublished AWS Lambda pool and its migration 214.
 - The previous personal AWS image.
 - Any Enterprise source beyond the new MARS modules and the narrow patches.
+
+## Customer package — 2026-11-17
+
+The versioned evaluation bundle includes a staged Python installer, a checksum-verified fetch of the official Enterprise Compose file, local image builds and guarded baseline/MARS activation. The customer README and INSTALL guide cover prerequisites and private configuration. INTEGRATION_CONTRACT maps DigitalOcean's recommendations to implemented behavior and outstanding qualifications. INSTALL_MANUAL preserves the existing-stack overlay path.
+
+The setup/release suite passed 46 tests. Independent clean-directory preparation passed against the real Docker/Compose CLI without starting containers. Full fresh-install onboarding and end-to-end MARS validation remain customer qualification steps; prior live 1/5/10 evidence describes the existing evaluation deployment.
