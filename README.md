@@ -1,6 +1,6 @@
 # OpenHands Enterprise on DigitalOcean MARS
 
-Run native OpenHands Automation jobs in DigitalOcean MARS microVMs while keeping the Enterprise control plane on your own Docker Compose host. A standard native automation run gets one MARS VM; independent runs provide concurrency.
+Run interactive OpenHands conversations and native Automation jobs in DigitalOcean MARS microVMs while keeping the Enterprise control plane on your own Docker Compose host. A standard native automation run gets one MARS VM; independent runs provide concurrency.
 
 This repository supplies the MARS sandbox provider, authenticated runtime gateway, version-checked image patches and installation tools. **You use the official OpenHands Compose stack with this add-on. You do not need a copy of the original evaluation machine or its AWS configuration.** The host can be your own Linux machine on DigitalOcean, AWS or another provider.
 
@@ -73,6 +73,14 @@ Follow the [step-by-step installation guide](docs/INSTALL.md) for the exact prep
 | Sandbox admission cap | The staged installer keeps this evaluation at ten per identity. The manual overlay exposes `MARS_MAX_SANDBOXES` for separately qualified configurations. Exceeding the cap can pause the oldest running sandbox; it is not a queue or autoscaler. |
 
 The [environment template](templates/environment.example.yaml) describes the evaluated MARS configuration. Create a new environment config for each release rather than modifying an existing one. Store rendered manifests, secret files and site settings outside git. See the install guide for Linux file ownership/read permissions.
+
+## Start an interactive conversation
+
+After activating the MARS add-on, open Enterprise Canvas, choose **New Chat**, select a configured model and send your prompt. The active sandbox provider is MARS, so the agent's terminal, files and tools run inside a MARS VM while Compose hosts the Enterprise control plane. No separate MARS launch command is needed.
+
+Enterprise creates a new MARS VM when the conversation needs a sandbox and no eligible running sandbox can be reused. Its normal sandbox-grouping settings can place multiple conversations in an existing VM; **New Chat does not guarantee a new VM every time**. Continuing an existing chat uses its assigned sandbox, subject to lifecycle availability. Native automation runs get their own assigned VMs.
+
+The model connection must be funded and usable, and the resolved LLM endpoint must be allowed in the MARS environment config through `MARS_LLM_EGRESS_HOSTS`. A small coding task is a useful first check: ask the agent to write and execute a Python script in `/workspace` and report the observed output. Confirm terminal execution, rather than only a text response. See the [real Gemini conversation and post-reload follow-up results](docs/LLM_VALIDATION.md).
 
 ## Validate your installation
 
