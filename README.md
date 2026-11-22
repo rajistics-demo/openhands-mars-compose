@@ -45,7 +45,7 @@ Install Docker using the [official Docker Engine instructions](https://docs.dock
 
 ## Install the add-on
 
-Download the versioned ZIP and checksum from [GitHub Releases](https://github.com/rajistics-demo/openhands-mars-compose/releases), or clone this repository and check out the corresponding release tag. Repository/release access is required while this project is private. Extract the bundle on the machine that will run Compose.
+Download the versioned ZIP and checksum from [GitHub Releases](https://github.com/rajistics-demo/openhands-mars-compose/releases), or clone this repository and check out the corresponding release tag. Extract the bundle on the machine that will run Compose.
 
 For this release, download both assets from [v1.88.0-mars2](https://github.com/rajistics-demo/openhands-mars-compose/releases/tag/v1.88.0-mars2), then run:
 
@@ -112,6 +112,8 @@ These tests do not invoke an LLM. Configure and validate your preferred model se
 The [technical integration contract](docs/INTEGRATION_CONTRACT.md) maps each recommendation to code behavior, evidence and remaining assumptions. It distinguishes implemented behavior from observations and planned work.
 
 ## Documentation and review
+
+See the [provider status record](provider.json) for release and pilot validation.
 
 - [Install and configure](docs/INSTALL.md)
 - [Architecture and five integration seams](docs/INTEGRATION_SEAMS.md)

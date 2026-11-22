@@ -65,6 +65,7 @@
 0755 installer/tests/fake_docker.py
 0644 installer/tests/test_mars_release.py
 0644 installer/tests/test_mars_setup.py
+0644 provider.json
 0755 scripts/mars_apply.py
 0755 scripts/preflight.sh
 0644 scripts/test_compose_contract.py

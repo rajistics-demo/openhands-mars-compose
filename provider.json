@@ -1,0 +1,12 @@
+{
+  "contract_version": 1,
+  "provider": "mars",
+  "package": "openhands-mars-compose",
+  "native_enterprise": "implemented",
+  "resume_semantics": "same-process",
+  "evidence": {
+    "api": "Existing MARS release has a versioned, checksum-verified installer. Historical native pilot verified lifecycle, interactive conversations, and isolated 1/5/10-job cohorts.",
+    "canvas": "Shared Pause and authenticated preview were verified on a separate MARS pilot overlay. The published installer has not reproduced that Canvas run.",
+    "expiry": "Workspace recovery on a replacement VM is untested."
+  }
+}
