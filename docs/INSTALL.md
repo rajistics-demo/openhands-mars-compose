@@ -130,6 +130,10 @@ Do not use `up --baseline` as a rollback after MARS activation. Stock 1.88.0 can
 
 ### Check an interactive conversation on MARS
 
+Confirm that the Sandbox V1 spec catalog lists `do-mars-agent-server`.
+Pass that ID as the `sandbox_spec_id` query parameter on
+`POST /api/v1/sandboxes` to select the environment explicitly.
+
 After activation, open Canvas, choose **New Chat**, select your existing usable model profile and send a small coding task. For example: “Write and execute a Python script under `/workspace` that computes the sum of squares from 0 through 9999, asserts 333283335000, and reports the observed result.” Verify successful terminal execution, reload the saved chat, and send a follow-up that reads the existing file.
 
 With the MARS provider active, Enterprise allocates a MARS VM when needed. Normal sandbox grouping may reuse an eligible running VM, so a new conversation does not necessarily mean a new VM. An existing conversation retains its assigned sandbox, subject to lifecycle availability. The integration preserves these Enterprise choices; it does not force one new VM per chat. This interactive check is separate from the no-LLM native automation validator below. See [the measured real-conversation validation](LLM_VALIDATION.md).

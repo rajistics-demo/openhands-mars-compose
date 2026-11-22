@@ -27,6 +27,20 @@ flowchart LR
 
 [Architecture and five integration seams](docs/INTEGRATION_SEAMS.md) explains how this follows the earlier E2B provider pattern and where MARS requires different behavior.
 
+## Sandbox Spec compatibility
+
+The MARS adapter uses the Enterprise Sandbox Spec catalog. Its
+`do-mars-agent-server` spec maps to the operator-configured DigitalOcean
+MARS environment.
+
+Enterprise’s Sandbox Spec selector and Agent Profile references use the
+same ID contract when those features are available in the Enterprise
+release. Kubernetes uses that contract to refer to a named runtime
+configuration. This Compose package activates a single sandbox backend.
+Offering Kubernetes and microVMs in one installation still requires
+routing new launches to the selected provider and routing existing
+conversations through their saved sandbox binding.
+
 ## Before you install
 
 Use a Linux evaluation host with Python **3.11+**, Docker Engine and Docker Compose **2.24.4+**. The tested control-plane host had four vCPUs and 16 GB RAM; this is an observed configuration, not a minimum sizing guarantee.
