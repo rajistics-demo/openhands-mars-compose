@@ -1,0 +1,37 @@
+{{- if .Values.ingress.preview.enabled -}}
+{{- $fullname := include "mars-doks.fullname" . -}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $fullname }}-preview
+  labels:
+    {{- include "mars-doks.labels" . | nindent 4 }}
+    app.kubernetes.io/component: preview
+  annotations:
+    {{- toYaml (.Values.ingress.annotations | default dict) | nindent 4 }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- if .Values.ingress.preview.tlsSecretName }}
+  tls:
+    - hosts: [{{ required "ingress.preview.host is required when ingress.preview.enabled" .Values.ingress.preview.host | quote }}]
+      secretName: {{ .Values.ingress.preview.tlsSecretName }}
+  {{- end }}
+  rules:
+    - host: {{ required "ingress.preview.host is required when ingress.preview.enabled" .Values.ingress.preview.host | quote }}
+      http:
+        paths:
+          # Forwards to the same gateway upstream as the runtime vhost -
+          # do_mars_proxy.py's preview routes live on the same ASGI app as
+          # its sandbox proxy routes, distinguished only by the Host
+          # header/cookie preview_domain()/valid_preview_cookie() check,
+          # never by this Ingress's own path or host matching alone.
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $fullname }}-gateway
+                port:
+                  number: 8100
+{{- end }}

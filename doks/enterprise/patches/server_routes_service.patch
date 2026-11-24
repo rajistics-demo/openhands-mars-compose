@@ -1,0 +1,36 @@
+diff --git a/server/routes/service.py b/server/routes/service.py
+index 57ac66b..4095fc6 100644
+--- a/server/routes/service.py
++++ b/server/routes/service.py
+@@ -51,6 +51,19 @@ class CreateUserApiKeyRequest(BaseModel):
+     """Request model for creating an API key on behalf of a user."""
+ 
+     name: str  # Required - used to identify the key
++    expires_at: datetime | None = None
++
++    @field_validator('expires_at')
++    @classmethod
++    def validate_expiry(cls, value: datetime | None) -> datetime | None:
++        if value is None:
++            return None
++        now = datetime.now(timezone.utc)
++        if value.tzinfo is None or not now < value <= now + timedelta(days=1):
++            raise ValueError(
++                'Run key expiry must be timezone-aware, future and within 24 hours'
++            )
++        return value.astimezone(timezone.utc)
+ 
+     @field_validator('name')
+     @classmethod
+@@ -251,6 +264,11 @@ async def get_or_create_api_key_for_user(
+             user_id=str(user_uuid),
+             org_id=org_id,
+             name=request.name,
++            **(
++                {'expires_at': request.expires_at}
++                if request.expires_at is not None
++                else {}
++            ),
+         )
+     except Exception as e:
+         logger.exception(

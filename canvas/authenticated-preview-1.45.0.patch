@@ -1,0 +1,528 @@
+diff --git a/__tests__/components/features/conversation/conversation-name-with-status.test.tsx b/__tests__/components/features/conversation/conversation-name-with-status.test.tsx
+index 145dc48b3..c3a44ee17 100644
+--- a/__tests__/components/features/conversation/conversation-name-with-status.test.tsx
++++ b/__tests__/components/features/conversation/conversation-name-with-status.test.tsx
+@@ -17,16 +17,21 @@ const mocks = vi.hoisted(() => ({
+     execution_status: "running",
+   } as
+     | {
++        id?: string;
+         execution_status?: ExecutionStatus | null;
+         sandbox_status?: string | null;
++        sandbox_id?: string | null;
++        sandbox_supports_runtime_pause?: boolean;
+       }
+     | undefined,
+   curAgentState: "running" as AgentState,
+   isTask: false,
+   taskStatus: null as string | null,
+   pauseConversation: vi.fn(),
++  pausePending: false,
+   resumeConversation: vi.fn(),
+   providers: [{ name: "provider-1" }],
++  backendKind: "local" as "local" | "cloud",
+ }));
+ 
+ vi.mock("#/hooks/use-conversation-id", () => ({
+@@ -52,9 +57,14 @@ vi.mock("#/hooks/query/use-task-polling", () => ({
+ vi.mock("#/hooks/mutation/use-unified-stop-conversation", () => ({
+   useUnifiedPauseConversation: () => ({
+     mutate: mocks.pauseConversation,
++    isPending: mocks.pausePending,
+   }),
+ }));
+ 
++vi.mock("#/contexts/active-backend-context", () => ({
++  useActiveBackend: () => ({ backend: { kind: mocks.backendKind } }),
++}));
++
+ vi.mock("#/hooks/mutation/use-unified-start-conversation", () => ({
+   useUnifiedResumeConversation: () => ({
+     mutate: mocks.resumeConversation,
+@@ -170,6 +180,8 @@ describe("conversation name status controls", () => {
+     mocks.isTask = false;
+     mocks.taskStatus = null;
+     mocks.providers = [{ name: "provider-1" }];
++    mocks.pausePending = false;
++    mocks.backendKind = "local";
+   });
+ 
+   it("shows a failed launch instead of the previous conversation status", () => {
+@@ -246,6 +258,59 @@ describe("conversation name status controls", () => {
+     expect(onParentClick).not.toHaveBeenCalled();
+   });
+ 
++  describe("runtime Pause", () => {
++    beforeEach(() => {
++      mocks.backendKind = "cloud";
++      mocks.conversation = {
++        id: "conversation-1",
++        execution_status: ExecutionStatus.IDLE,
++        sandbox_id: "sandbox-1",
++        sandbox_status: "RUNNING",
++        sandbox_supports_runtime_pause: true,
++      };
++    });
++
++    it("pauses the advertised sandbox through the unified pause mutation", () => {
++      renderSubject();
++      fireEvent.click(screen.getByTestId("pause-cloud-runtime-button"));
++      expect(mocks.pauseConversation).toHaveBeenCalledWith({
++        conversationId: "conversation-1",
++      });
++    });
++
++    it("disables the button while a pause is already in flight", () => {
++      mocks.pausePending = true;
++      renderSubject();
++      expect(screen.getByTestId("pause-cloud-runtime-button")).toBeDisabled();
++    });
++
++    it.each([
++      { sandbox_supports_runtime_pause: false },
++      { sandbox_supports_runtime_pause: undefined },
++      { id: "previous-conversation" },
++      { sandbox_id: null },
++      { sandbox_status: "PAUSED" },
++      { execution_status: ExecutionStatus.RUNNING },
++    ])(
++      "hides the button when the current runtime is ineligible (%j)",
++      (patch) => {
++        mocks.conversation = { ...mocks.conversation, ...patch };
++        renderSubject();
++        expect(
++          screen.queryByTestId("pause-cloud-runtime-button"),
++        ).not.toBeInTheDocument();
++      },
++    );
++
++    it("hides the runtime button on a local backend", () => {
++      mocks.backendKind = "local";
++      renderSubject();
++      expect(
++        screen.queryByTestId("pause-cloud-runtime-button"),
++      ).not.toBeInTheDocument();
++    });
++  });
++
+   it("offers Stop Runtime for a running cloud sandbox after the agent is interrupted", () => {
+     mocks.conversation = {
+       execution_status: ExecutionStatus.PAUSED,
+diff --git a/__tests__/components/features/conversation/pilot-recovered-preview.test.tsx b/__tests__/components/features/conversation/pilot-recovered-preview.test.tsx
+new file mode 100644
+index 000000000..1f9b44cbe
+--- /dev/null
++++ b/__tests__/components/features/conversation/pilot-recovered-preview.test.tsx
+@@ -0,0 +1,152 @@
++// @vitest-environment-options {"url":"https://app.example.test/"}
++import { render, screen, waitFor } from "@testing-library/react";
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
++import type { ResolvedActiveBackend } from "#/api/backend-registry/types";
++import type { AppConversation } from "#/api/conversation-service/agent-server-conversation-service.types";
++import { PilotRecoveredPreview } from "#/components/features/conversation/pilot-recovered-preview";
++
++const fixture = vi.hoisted(() => ({ url: "" }));
++const useQuerySpy = vi.hoisted(() =>
++  vi.fn((opts: { enabled?: boolean }) => ({
++    // Mirrors react-query's own contract: a disabled query never resolves
++    // data, so a paused sandbox can't be woken by this component mounting
++    // (see "does not query, and renders nothing, for a paused sandbox" below).
++    data: opts.enabled
++      ? {
++          id: "sandboxabc",
++          exposed_urls: [{ name: "WORKER_1", url: fixture.url }],
++        }
++      : undefined,
++  })),
++);
++vi.mock("@tanstack/react-query", () => ({
++  useQuery: useQuerySpy,
++}));
++
++const active = {
++  backend: { id: "pilot", kind: "cloud", host: window.location.origin },
++  orgId: "pilot-org",
++} as ResolvedActiveBackend;
++const conversation = {
++  sandbox_id: "sandboxabc",
++  sandbox_status: "RUNNING",
++  session_api_key: null,
++  tags: { canvasrecoverypilotpreview: "true" },
++} satisfies Pick<
++  AppConversation,
++  "sandbox_id" | "sandbox_status" | "tags" | "session_api_key"
++>;
++
++describe("PilotRecoveredPreview", () => {
++  beforeEach(() => {
++    vi.stubEnv("VITE_CANVAS_RECOVERY_PILOT_ORIGIN", window.location.origin);
++    useQuerySpy.mockClear();
++  });
++
++  afterEach(() => {
++    vi.unstubAllEnvs();
++    vi.unstubAllGlobals();
++  });
++
++  it("embeds the E2B preview bound to this sandbox and worker port", () => {
++    fixture.url = "https://8011-sandboxabc.e2b.app/";
++    render(
++      <PilotRecoveredPreview conversation={conversation} active={active} />,
++    );
++
++    expect(screen.getByTitle("Live workspace preview")).toHaveAttribute(
++      "src",
++      fixture.url,
++    );
++  });
++
++  it.each([
++    "https://8011-othersandbox.e2b.app/",
++    "https://8000-sandboxabc.e2b.app/",
++    "https://8011-sandboxabc.e2b.app.invalid/",
++    "https://8011-sandboxabc.e2b.app/?key=synthetic",
++    "https://8011-sandboxabc.e2b.app/unexpected",
++    "invalid URL",
++    "https://other.preview.app.example.test/",
++  ])("rejects %s", (url) => {
++    fixture.url = url;
++    render(
++      <PilotRecoveredPreview conversation={conversation} active={active} />,
++    );
++
++    expect(screen.queryByTitle("Live workspace preview")).toBeNull();
++  });
++
++  it("does not query, and renders nothing, for a paused sandbox", () => {
++    fixture.url = "https://8011-sandboxabc.e2b.app/";
++    render(
++      <PilotRecoveredPreview
++        conversation={{ ...conversation, sandbox_status: "PAUSED" }}
++        active={active}
++      />,
++    );
++
++    expect(screen.queryByTitle("Live workspace preview")).toBeNull();
++    expect(useQuerySpy).toHaveBeenCalledExactlyOnceWith(
++      expect.objectContaining({ enabled: false }),
++    );
++  });
++});
++
++describe("credentialed MARS preview", () => {
++  afterEach(() => vi.unstubAllGlobals());
++
++  it("exchanges the sandbox key only on the matching preview origin before mounting", async () => {
++    fixture.url = "https://sandboxabc.preview.app.example.test/";
++    const grant = vi
++      .fn()
++      .mockResolvedValue(new Response(null, { status: 204 }));
++    vi.stubGlobal("fetch", grant);
++
++    render(
++      <PilotRecoveredPreview
++        conversation={{
++          ...conversation,
++          session_api_key: "synthetic-key",
++          tags: {},
++        }}
++        active={active}
++      />,
++    );
++    expect(screen.queryByTitle("Live workspace preview")).toBeNull();
++    expect(await screen.findByTitle("Live workspace preview")).toHaveAttribute(
++      "src",
++      fixture.url,
++    );
++    expect(grant).toHaveBeenCalledExactlyOnceWith(
++      new URL("/.well-known/openhands-preview-session", fixture.url),
++      expect.objectContaining({
++        method: "POST",
++        credentials: "include",
++        redirect: "error",
++        headers: { "X-Session-API-Key": "synthetic-key" },
++      }),
++    );
++  });
++
++  it("keeps the preview hidden when authorization is refused", async () => {
++    fixture.url = "https://sandboxabc.preview.app.example.test/";
++    const grant = vi
++      .fn()
++      .mockResolvedValue(new Response(null, { status: 401 }));
++    vi.stubGlobal("fetch", grant);
++
++    render(
++      <PilotRecoveredPreview
++        conversation={{
++          ...conversation,
++          session_api_key: "synthetic-key",
++          tags: {},
++        }}
++        active={active}
++      />,
++    );
++    await waitFor(() => expect(grant).toHaveBeenCalled());
++    expect(screen.queryByTitle("Live workspace preview")).toBeNull();
++  });
++});
+diff --git a/src/api/conversation-service/agent-server-conversation-service.types.ts b/src/api/conversation-service/agent-server-conversation-service.types.ts
+index 02aaa5d12..8bad49c62 100644
+--- a/src/api/conversation-service/agent-server-conversation-service.types.ts
++++ b/src/api/conversation-service/agent-server-conversation-service.types.ts
+@@ -228,6 +228,8 @@ export interface AppConversation {
+    * Absent / null for local agent-server conversations.
+    */
+   sandbox_status?: SandboxStatus | null;
++  /** Native runtime pause/resume advertised by Enterprise for this sandbox. */
++  sandbox_supports_runtime_pause?: boolean;
+   conversation_url: string | null;
+   session_api_key: string | null;
+   sandbox_id: string | null;
+diff --git a/src/components/features/conversation/conversation-name-with-status.tsx b/src/components/features/conversation/conversation-name-with-status.tsx
+index 0aff4c33d..37c2e01b6 100644
+--- a/src/components/features/conversation/conversation-name-with-status.tsx
++++ b/src/components/features/conversation/conversation-name-with-status.tsx
+@@ -1,4 +1,6 @@
+ import React from "react";
++import { useActiveBackend } from "#/contexts/active-backend-context";
++import { ExecutionStatus } from "#/types/agent-server/core";
+ import { useConversationLaunchStore } from "#/stores/conversation-launch-store";
+ import { OH_STATUS_ERROR_COLOR } from "#/constants/status-colors";
+ import { useTranslation } from "react-i18next";
+@@ -34,7 +36,9 @@ export function ConversationNameWithStatus() {
+   const { data: conversation } = useActiveConversation();
+   const { curAgentState } = useAgentState();
+   const { isTask, taskStatus } = useTaskPolling();
+-  const { mutate: pauseConversation } = useUnifiedPauseConversation();
++  const { mutate: pauseConversation, isPending: pausePending } =
++    useUnifiedPauseConversation();
++  const { backend } = useActiveBackend();
+   const { mutate: resumeConversation } = useUnifiedResumeConversation();
+   const { providers } = useUserProviders();
+   const [menuOpen, setMenuOpen] = React.useState(false);
+@@ -42,6 +46,20 @@ export function ConversationNameWithStatus() {
+   const triggerRef = React.useRef<HTMLButtonElement>(null);
+ 
+   const executionStatus = conversation?.execution_status ?? null;
++  // A dedicated, always-visible toggle distinct from the Stop-in-menu
++  // control: only for a cloud sandbox the server has confirmed can pause
++  // natively (`sandbox_supports_runtime_pause`), still bound to this route's
++  // conversation (guards a stale id from a just-switched backend/conversation),
++  // and only while the agent itself isn't mid-execution — a running agent is
++  // stopped via the existing control, not paused out from under it.
++  const canPauseRuntime =
++    backend.kind === "cloud" &&
++    conversation?.sandbox_supports_runtime_pause === true &&
++    conversation?.id === conversationId &&
++    conversation?.sandbox_status === "RUNNING" &&
++    !!conversation?.sandbox_id &&
++    (executionStatus === ExecutionStatus.IDLE ||
++      executionStatus === ExecutionStatus.FINISHED);
+   const isStartingStatus =
+     !conversation ||
+     curAgentState === AgentState.LOADING ||
+@@ -163,6 +181,17 @@ export function ConversationNameWithStatus() {
+         <ConversationName />
+       </div>
+       <div className="mr-2 flex shrink-0 items-center gap-1">
++        {canPauseRuntime && conversationId && (
++          <button
++            type="button"
++            data-testid="pause-cloud-runtime-button"
++            className="rounded-md px-2 py-1 text-sm text-foreground hover:bg-contrast/10 disabled:opacity-50"
++            disabled={pausePending}
++            onClick={() => pauseConversation({ conversationId })}
++          >
++            {t(I18nKey.COMMON$PAUSE_RUNTIME)}
++          </button>
++        )}
+         <ConversationGitActionsToggle />
+         <ConversationOverviewToggle />
+         <RightPanelToggle />
+diff --git a/src/components/features/conversation/pilot-recovered-preview.tsx b/src/components/features/conversation/pilot-recovered-preview.tsx
+new file mode 100644
+index 000000000..aa4c7c98a
+--- /dev/null
++++ b/src/components/features/conversation/pilot-recovered-preview.tsx
+@@ -0,0 +1,144 @@
++import { useEffect, useState } from "react";
++import { useQuery } from "@tanstack/react-query";
++import type { ResolvedActiveBackend } from "#/api/backend-registry/types";
++import { batchGetCloudSandboxes } from "#/api/cloud/sandbox-service.api";
++import type { AppConversation } from "#/api/conversation-service/agent-server-conversation-service.types";
++
++const PREVIEW_SESSION_PATH = "/.well-known/openhands-preview-session";
++const PREVIEW_RENEW_MS = 4 * 60 * 1000;
++
++function previewTarget(
++  url: string,
++  appOrigin: string,
++  sandboxId: string,
++  allowPilot: boolean,
++) {
++  let src: URL;
++  try {
++    src = new URL(url);
++  } catch {
++    return null;
++  }
++  if (src.search || src.hash || src.username || src.password) return null;
++
++  const app = new URL(appOrigin);
++  if (
++    app.protocol === "https:" &&
++    /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(sandboxId) &&
++    src.origin === `https://${sandboxId}.preview.${app.hostname}` &&
++    src.pathname === "/"
++  ) {
++    return { href: src.href, credentialed: true };
++  }
++
++  if (!allowPilot) return null;
++  const aws =
++    src.origin === `https://runtime-repo.${app.host}` &&
++    src.pathname.replace(/\/$/, "") === `/${sandboxId}/8011`;
++  const e2b =
++    /^[a-z0-9]+$/.test(sandboxId) &&
++    src.origin === `https://8011-${sandboxId}.e2b.app` &&
++    src.pathname === "/";
++  if (!aws && !e2b) return null;
++  if (!src.pathname.endsWith("/")) src.pathname += "/";
++  return { href: src.href, credentialed: false };
++}
++
++function usePreviewSession(
++  origin: string | undefined,
++  key: string | undefined,
++) {
++  const [authorizedOrigin, setAuthorizedOrigin] = useState<string>();
++  useEffect(() => {
++    setAuthorizedOrigin(undefined);
++    if (!origin || !key) return undefined;
++
++    const controller = new AbortController();
++    const authorize = async () => {
++      try {
++        const response = await fetch(new URL(PREVIEW_SESSION_PATH, origin), {
++          method: "POST",
++          headers: { "X-Session-API-Key": key },
++          credentials: "include",
++          redirect: "error",
++          signal: controller.signal,
++        });
++        if (!controller.signal.aborted) {
++          setAuthorizedOrigin(response.status === 204 ? origin : undefined);
++        }
++      } catch {
++        if (!controller.signal.aborted) setAuthorizedOrigin(undefined);
++      }
++    };
++
++    void authorize();
++    const renewal = window.setInterval(authorize, PREVIEW_RENEW_MS);
++    return () => {
++      controller.abort();
++      window.clearInterval(renewal);
++    };
++  }, [origin, key]);
++
++  return !!key && authorizedOrigin === origin;
++}
++
++export function PilotRecoveredPreview({
++  conversation,
++  active,
++}: {
++  conversation:
++    | Pick<
++        AppConversation,
++        "sandbox_id" | "sandbox_status" | "tags" | "session_api_key"
++      >
++    | null
++    | undefined;
++  active: ResolvedActiveBackend;
++}) {
++  const appOrigin =
++    typeof window === "undefined" ? undefined : window.location.origin;
++  const sandboxId = conversation?.sandbox_id;
++  const enabled =
++    !!appOrigin &&
++    active.backend.kind === "cloud" &&
++    active.backend.host === appOrigin &&
++    conversation?.sandbox_status === "RUNNING" &&
++    !!sandboxId;
++  const allowPilot =
++    import.meta.env.VITE_CANVAS_RECOVERY_PILOT_ORIGIN === appOrigin &&
++    conversation?.tags?.canvasrecoverypilotpreview === "true";
++  const sandbox = useQuery({
++    queryKey: [
++      "canvas-workspace-preview",
++      active.backend.id,
++      active.orgId,
++      sandboxId,
++    ],
++    enabled,
++    queryFn: async () => (await batchGetCloudSandboxes([sandboxId!]))[0],
++  });
++  const preview = sandbox.data?.exposed_urls?.find(
++    ({ name }) => name === "WORKER_1",
++  );
++  const target =
++    enabled && preview && sandbox.data?.id === sandboxId
++      ? previewTarget(preview.url, appOrigin, sandboxId, allowPilot)
++      : null;
++  const authorized = usePreviewSession(
++    target?.credentialed ? target.href : undefined,
++    conversation?.session_api_key ?? undefined,
++  );
++
++  if (!target || (target.credentialed && !authorized)) return null;
++  return (
++    <iframe
++      // eslint-disable-next-line i18next/no-literal-string -- short a11y label for an internal pilot preview frame, not yet wired to i18n
++      title="Live workspace preview"
++      data-testid="canvas-pilot-live-preview"
++      src={target.href}
++      referrerPolicy="no-referrer"
++      sandbox="allow-scripts allow-same-origin"
++      className="h-64 w-full shrink-0 border-t"
++    />
++  );
++}
+diff --git a/src/i18n/translation.json b/src/i18n/translation.json
+index 3f1fded2d..13f1010cd 100644
+--- a/src/i18n/translation.json
++++ b/src/i18n/translation.json
+@@ -1,4 +1,7 @@
+ {
++  "COMMON$PAUSE_RUNTIME": {
++    "en": "Pause"
++  },
+   "ASK_USER$SEND": {
+     "en": "Send answer",
+     "ja": "回答を送信",
+diff --git a/src/routes/conversation.tsx b/src/routes/conversation.tsx
+index 112cd602d..4ec05e1a6 100644
+--- a/src/routes/conversation.tsx
++++ b/src/routes/conversation.tsx
+@@ -1,3 +1,4 @@
++import { PilotRecoveredPreview } from "#/components/features/conversation/pilot-recovered-preview";
+ import { usePendingTaskAttachmentsStore } from "#/stores/pending-task-attachments-store";
+ import { restoreStartupAttachmentDraft } from "#/utils/restore-startup-attachment-draft";
+ import { CONVERSATION_LAUNCH_PREFIX } from "#/stores/conversation-launch-store";
+@@ -245,7 +246,13 @@ function AppContent() {
+               }
+             />
+           ) : (
+-            <ConversationMain />
++            <>
++              <ConversationMain />
++              <PilotRecoveredPreview
++                conversation={conversation}
++                active={active}
++              />
++            </>
+           )}
+         </div>
+       </ConversationOverviewDrawerProvider>

@@ -6,7 +6,9 @@ control plane is faked, because it is an external service.
 
 import asyncio
 import socket
+import uuid
 from datetime import timedelta
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -319,19 +321,34 @@ def test_migration_is_rebased_on_release_head_and_survives_stamp_rollback(
             ).scalar()
 
     expected = {'provider_resource_id', 'provider_create_intent_at'}
-    # 'head' is now do_mars_002 (the warm-pool migration, do_mars_001's
-    # child); its own table is unrelated to these two v1_remote_sandbox
-    # columns, which is why they are still exactly `expected` here.
-    assert version() == 'do_mars_002' and columns() == expected
-    # Data-preserving rollback: stock image sees 213, columns stay.
-    postgres_testdb.run_alembic(server, name, 'stamp', '213')
-    assert version() == '213' and columns() == expected
+    # 'head' is now do_mars_doks_002 (the warm-pool migration,
+    # do_mars_doks_001's child); its own table is unrelated to these two
+    # v1_remote_sandbox columns, which is why they are still exactly
+    # `expected` here. (Revision ids carry the doks_ infix - see
+    # migrations/versions/do_mars_doks_00{1,2}_*.py's own `revision =`
+    # fields - because this package's migrations are DOKS-specific
+    # rebases of the upstream do_mars_00{1,2} ones, not the same ids.)
+    assert version() == 'do_mars_doks_002' and columns() == expected
+    # Data-preserving rollback: stock image sees 221 - do_mars_doks_001's
+    # own down_revision, i.e. the actual immediate pre-do_mars revision in
+    # this rebased chain (not the pre-rebase do_mars_001's old parent,
+    # '213': stamping back to that stale target left alembic_version
+    # believing migrations 214..221 (ordinary, non-idempotent stock
+    # migrations, unrelated to do_mars) still needed replaying on the
+    # next `upgrade head` below, and replaying e.g. 214's `ADD COLUMN
+    # license_key` against a database that already has it - stamped
+    # there once already, since `stamp` only moves the version pointer
+    # and never runs DDL - fails with a real "column already exists"
+    # error. Using this chain's real parent avoids re-running anything
+    # but do_mars's own two migrations.
+    postgres_testdb.run_alembic(server, name, 'stamp', '221')
+    assert version() == '221' and columns() == expected
     # Reinstall is idempotent on the kept columns.
     postgres_testdb.run_alembic(server, name, 'upgrade', 'head')
-    assert version() == 'do_mars_002' and columns() == expected
+    assert version() == 'do_mars_doks_002' and columns() == expected
     # Full downgrade removes them; upgrade restores them.
-    postgres_testdb.run_alembic(server, name, 'downgrade', '213')
-    assert version() == '213' and columns() == set()
+    postgres_testdb.run_alembic(server, name, 'downgrade', '221')
+    assert version() == '221' and columns() == set()
     postgres_testdb.run_alembic(server, name, 'upgrade', 'head')
     assert columns() == expected
 
@@ -376,7 +393,7 @@ async def test_pool_claim_is_scoped_to_the_resolved_spec_config_id(async_session
             result = await service._start_sandbox_from_pool(
                 spec,
                 'sbx-pool-claim',
-                SandboxStartedBy.USER,
+                SandboxStartedBy.APP_CONVERSATION,
                 None,
                 OWNER,
                 None,
@@ -388,19 +405,69 @@ async def test_pool_claim_is_scoped_to_the_resolved_spec_config_id(async_session
     assert claim_one_mock.await_args.kwargs['config_id'] != 'default'
 
 
-# NOTE: no executable regression test here for the UUID-org claimed_org_id
-# fix in _start_sandbox_from_pool (do_mars_sandbox_service.py). That
-# module - and this whole test file - require
-# `from openhands.agent_server.utils import utc_now` at module scope,
-# which this sandbox genuinely cannot import (no network access to fetch
-# openhands-agent-server, and it is not part of the stub tree by design -
-# see enterprise/tests/conftest.py's own docstring). This is the exact
-# same documented limitation as session 2's pool_config/PrivateAttr fix in
-# this same file: verified here only by py_compile and manual review of
-# the call site (claimed_org_id=str(org) if org is not None else None,
-# credential_org_id=org left untouched a few lines below for the owned
-# StoredSandbox row's own ORM-typed column), not by a test in this
-# sandbox. An environment with the real Enterprise/agent-server tree
-# should add a test asserting claim_one receives a str even when `org` is
-# a uuid.UUID, and that credential_org_id on the resulting StoredSandbox
-# row is untouched.
+@pytest.mark.asyncio
+async def test_pool_claim_stringifies_a_uuid_org_but_leaves_the_owned_row_native(
+    async_session_maker,
+):
+    """claim_one's claimed_org_id is a VARCHAR column (do_mars_doks_002's
+    migration), but Enterprise's real UserContext hands this method a
+    uuid.UUID, not a str, despite this method's own ``org: str | None``
+    annotation - confirmed on a real deployment: asyncpg rejected the
+    claim with "expected str, got UUID" on every single pool warm-start.
+    str(org) must be scoped to that one claim column; credential_org_id
+    on the resulting, owned StoredSandbox row must stay the native value
+    untouched, because that column is ORM-typed, not VARCHAR.
+
+    Previously documented as unverifiable in a sandbox without the real
+    Enterprise/agent-server tree (see git history); now exercised for
+    real against the genuine do_mars_sandbox_service.py and a real
+    PostgreSQL-backed StoredSandbox row, with only the DO-facing seams
+    (claim_one, promote_claim_to_sandbox, wait_ready, _init_agent_server)
+    faked - the same faking boundary every other test in this file uses.
+    """
+    spec = _spec()
+    org = uuid.UUID('00000000-0000-4000-8000-0000000000aa')
+    slot = SimpleNamespace(id='slot-1', provider_resource_id='do-resource-1')
+
+    with (
+        patch(
+            'openhands.app_server.sandbox.do_mars_sandbox_service.claim_one',
+            new=AsyncMock(return_value=slot),
+        ) as claim_one_mock,
+        patch(
+            'openhands.app_server.sandbox.do_mars_sandbox_service'
+            '.promote_claim_to_sandbox',
+            new=AsyncMock(),
+        ),
+    ):
+        async with async_session_maker() as db:
+            service = _service(
+                db,
+                _user(OWNER),
+                AsyncMock(),
+                pool_config=DoMarsPoolConfig(
+                    enabled=True,
+                    sandbox_spec_id=spec.id,
+                    min_hot=1,
+                    min_paused_reserve=0,
+                    max_total=1,
+                ),
+            )
+            with (
+                patch.object(service, 'wait_ready', new=AsyncMock()),
+                patch.object(service, '_init_agent_server', new=AsyncMock()),
+            ):
+                row = await service._start_sandbox_from_pool(
+                    spec,
+                    'sbx-pool-claim-org',
+                    SandboxStartedBy.APP_CONVERSATION,
+                    None,
+                    OWNER,
+                    org,
+                )
+
+    assert row is not None
+    claim_one_mock.assert_awaited_once()
+    assert claim_one_mock.await_args.kwargs['claimed_org_id'] == str(org)
+    assert isinstance(claim_one_mock.await_args.kwargs['claimed_org_id'], str)
+    assert row.credential_org_id == org  # native uuid.UUID, not stringified

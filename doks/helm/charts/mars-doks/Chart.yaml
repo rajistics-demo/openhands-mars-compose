@@ -1,0 +1,19 @@
+apiVersion: v2
+name: mars-doks
+description: >-
+  Opt-in DigitalOcean MARS V2 provider for OpenHands Enterprise 1.97.1 on
+  DOKS: control-plane Deployments (app/worker/automation-server), the
+  authenticated runtime gateway, the opt-in warm pool reconciler, the
+  Canvas Pause/live-preview pilot, and the migration Job that applies this
+  package's two additive migrations. No sandbox containers run in-cluster;
+  sandboxes are DigitalOcean MARS VMs reached through the gateway.
+type: application
+version: 0.1.0
+appVersion: "1.97.1"
+keywords:
+  - openhands
+  - digitalocean
+  - mars
+home: https://github.com/rajistics-demo/openhands-mars-compose
+sources:
+  - https://github.com/rajistics-demo/openhands-mars-compose

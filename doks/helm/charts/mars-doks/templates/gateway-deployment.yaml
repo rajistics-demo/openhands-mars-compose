@@ -1,0 +1,109 @@
+{{- $fullname := include "mars-doks.fullname" . -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}-gateway
+  labels:
+    {{- include "mars-doks.labels" . | nindent 4 }}
+    app.kubernetes.io/component: gateway
+spec:
+  replicas: {{ .Values.replicaCount.gateway | default 1 }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mars-doks
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: gateway
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mars-doks
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: gateway
+    spec:
+      # Same bypass as the Compose package's mars-gateway service: the
+      # stock entrypoint.sh aborts with "must run as root" (it does
+      # root-only setup this plain uvicorn process never needs - no
+      # volumes, no docker socket). See docs/CALLBACKS.md for the uid/gid
+      # this shares with mars-pool-reconciler.
+      #
+      # fsGroup is required, not cosmetic: the mars-secrets Secret volume
+      # below is mounted at mode 0440 (owner+group read only), and without
+      # a pod fsGroup, kubelet projects Secret files as root:root - uid
+      # 42420 then gets Permission denied reading them. Setting fsGroup
+      # makes kubelet chown the volume to that group on mount. This must
+      # match whichever group actually owns the mars-secrets Secret's
+      # files once mounted; 42420 is correct here because runAsGroup is
+      # also 42420 (same convention the official openhands chart's own
+      # pod securityContext already uses for its own default
+      # fsGroup: 42420 - see docs/HELM.md "fsGroup must match across both
+      # releases").
+      securityContext:
+        runAsUser: 42420
+        runAsGroup: 42420
+        runAsNonRoot: true
+        fsGroup: 42420
+      containers:
+        - name: gateway
+          image: "{{ required "image.repository is required" .Values.image.repository }}:{{ required "image.tag is required" .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy | default "IfNotPresent" }}
+          command:
+            - uvicorn
+            - openhands.app_server.sandbox.do_mars_proxy:app
+            - --host
+            - 0.0.0.0
+            - --port
+            - "8100"
+            # Access logs stay off: legacy WS clients may put the session
+            # key in the query string.
+            - --no-access-log
+            - --proxy-headers
+          env:
+            {{- include "mars-doks.gatewayDbEnv" . | nindent 12 }}
+            - name: DO_MARS_ENABLE_BROWSER_PREVIEW
+              value: {{ .Values.doMars.enableBrowserPreview | quote }}
+            - name: DO_MARS_APP_ORIGIN
+              value: {{ required "webUrl is required" .Values.webUrl | quote }}
+            - name: DO_MARS_TEAM_TOKEN_FILE
+              value: /run/secrets/mars_team_token
+            - name: DO_MARS_SESSION_SIGNING_KEY_FILE
+              value: /run/secrets/mars_session_signing_key
+          volumeMounts:
+            {{- include "mars-doks.secretVolumeMount" . | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: 8100
+          # /alive is an unauthenticated liveness ping only ("is the ASGI
+          # app up at all"); it never dials a sandbox and carries no
+          # session key, so it is a correct k8s probe target as-is. It is
+          # NOT the authenticated, per-sandbox readiness check
+          # DoMarsSandboxService._check_agent_server_alive performs through
+          # this same gateway while a VM boots - that is sandbox-boot logic,
+          # not a container probe, and is unaffected by this setting.
+          readinessProbe:
+            httpGet:
+              path: /alive
+              port: 8100
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /alive
+              port: 8100
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            {{- toYaml (.Values.resources | default dict) | nindent 12 }}
+      volumes:
+        {{- include "mars-doks.secretVolume" . | nindent 8 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

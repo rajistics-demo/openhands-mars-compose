@@ -8,6 +8,7 @@
 0644 automation/patches/router.patch
 0644 automation/patches/utils_api_key.patch
 0644 automation/tests/test_mars_package_patches.py
+0644 canvas/authenticated-preview-1.45.0.patch
 0644 canvas/authenticated-preview.patch
 0644 compose/Caddyfile.example
 0644 compose/docker-compose.canvas-pilot.yml

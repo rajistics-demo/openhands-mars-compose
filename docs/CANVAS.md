@@ -52,6 +52,125 @@ Record the build's `git rev-parse HEAD` (must still be the pinned commit)
 and the `npm ci`/vitest output for your own evidence; this package only
 ships the source patch and the compose wiring below, not a built bundle.
 
+## 1.45.0 pin for the DOKS Helm chart
+
+The Compose recipe above still applies unchanged to the Compose installer.
+`doks/helm`'s vendored `openhands` chart (0.119.0) instead pins its
+`agent-canvas` subchart image to release **1.45.0** by default (see
+`charts/openhands/charts/agent-canvas/values.yaml` in that chart), not
+1.35.0, so the patch above does not apply there and needed its own rebase.
+
+[`canvas/authenticated-preview-1.45.0.patch`](../canvas/authenticated-preview-1.45.0.patch)
+is that rebase: the same two features (Pause control, gated live preview),
+manually re-applied hunk-by-hunk against `OpenHands/OpenHands` commit
+`47eed012171230b059c3f5cbf3798bded74ea248` ("chore(main): release 1.45.0
+(#20014)") because the 1.35.0 patch's surrounding file context had moved too
+far for `git apply` to place it automatically - a straight `git apply` of
+the old patch at this commit does not succeed. Reused unchanged from the
+1.35.0 patch: `pilot-recovered-preview.tsx` and its test file (both
+API-compatible, confirmed by inspection, not just by the patch applying).
+Re-adapted for this commit's component: `conversation-name-with-status.tsx`'s
+pause button and the `sandbox_supports_runtime_pause` field it reads, the
+`routes/conversation.tsx` mount point, and one `COMMON$PAUSE_RUNTIME`
+translation key (the 1.35.0 patch's other toast-copy keys were not ported -
+this rebase reuses the upstream hook's own existing toast copy unchanged).
+
+Build the same way, against this commit and this patch instead:
+
+```sh
+git clone --filter=blob:none https://github.com/OpenHands/OpenHands.git canvas-pilot-1450
+cd canvas-pilot-1450
+git checkout --detach 47eed012171230b059c3f5cbf3798bded74ea248
+
+git apply --check "$MARS_PACKAGE/canvas/authenticated-preview-1.45.0.patch"
+git apply "$MARS_PACKAGE/canvas/authenticated-preview-1.45.0.patch"
+
+npm ci
+npm run make-i18n
+npx vitest run __tests__/components/features/conversation/conversation-name-with-status.test.tsx \
+                __tests__/components/features/conversation/pilot-recovered-preview.test.tsx \
+                __tests__/hooks/mutation/use-unified-stop-conversation.test.tsx
+npm run typecheck
+
+VITE_BASE_PATH=/canvas VITE_CANVAS_RECOVERY_PILOT_ORIGIN=https://your-app-origin.example npm run build
+export CANVAS_PILOT_BUILD="$PWD/build"
+```
+
+**What was actually verified this round, on this worker, source-level only
+(no container build, no registry push, no live DigitalOcean/DOKS cluster -
+none of those are available or permitted from here):**
+
+- A completely independent fresh clone + `git checkout --detach` to the
+  pinned commit, then `git apply --check` and `git apply` of this exact
+  patch file, both clean.
+- `npm ci` (1316 packages), `npm run make-i18n`, and the three test files
+  above: **44 of 44 tests passed**, including a new
+  `"does not query, and renders nothing, for a paused sandbox"` case added
+  this round (`pilot-recovered-preview.test.tsx`) asserting the preview's
+  `useQuery` is called with `enabled: false` whenever
+  `sandbox_status !== "RUNNING"` - i.e. mounting this component for a
+  paused conversation issues no request and cannot itself wake the sandbox
+  - and the existing cross-origin/cross-sandbox/unauthenticated-preview
+  rejection cases (`it.each` of mismatched sandbox IDs/ports/origins, and
+  the 401-refused-authorization case) kept passing unchanged.
+- `npm run typecheck` (`react-router typegen && tsc`): clean.
+- `npx eslint --fix` on every changed file: clean except one pre-existing,
+  unrelated warning (`ml-[3.5px]` arbitrary Tailwind value on an untouched
+  line).
+- `VITE_BASE_PATH=/canvas VITE_CANVAS_RECOVERY_PILOT_ORIGIN=... npm run build`
+  completed and produced a real `build/index.html` plus `build/assets/`
+  (the same flat layout `CANVAS_PILOT_BUILD` already expects).
+
+**Explicitly NOT verified this round** (same gaps as the 1.35.0 pilot's own
+validation notes above, now also true for this rebase): no browser-driven
+Pause/resume/preview round-trip against a live sandbox, no DOKS/Helm
+install with it mounted, no live DigitalOcean MARS VM. Do not describe
+any of the above as "live-tested" - only the source-level build, lint,
+typecheck, unit-test, and (below) local Docker evidence applies to this
+pin so far.
+
+### Packaged as a Docker image
+
+[`doks/docker/canvas-pilot.Dockerfile`](../doks/docker/canvas-pilot.Dockerfile)
+automates the recipe above into a reproducible, multi-stage image: a
+`node:24-bookworm` stage fetches the pinned commit, applies this exact
+patch file, and runs `npm ci && npm run build`; the final stage starts
+`FROM` the stock, digest-pinned `ghcr.io/openhands/agent-canvas:1.45.0`
+and replaces only `/opt/agent-canvas/frontend` with the rebuilt bundle -
+everything else in that image (the real agent-server, the automation
+service, the `mars-*.mjs` DigitalOcean bridge scripts, `entrypoint.sh`)
+is the stock, unmodified image content. `AGENT_CANVAS_BASE`/`NODE_BASE`
+are pinned to OCI index digests read directly from `ghcr.io`/Docker Hub's
+own registry APIs in this worker (`docker-content-digest` response
+header), not guessed; `docker pull`ing the agent-canvas reference
+confirmed the local digest matches exactly.
+
+```bash
+docker build -f doks/docker/canvas-pilot.Dockerfile \
+  --build-arg VITE_CANVAS_RECOVERY_PILOT_ORIGIN=https://<your-app-origin> \
+  -t <your-registry>/agent-canvas-mars-pilot:1.45.0 .
+```
+
+Point `openhands-mars.values.yaml`'s `agent-canvas.image.repository`/
+`tag` at the pushed result to roll this out; leave them unset (this
+package's shipped default) to keep the stock, un-patched image.
+
+**Verified this round, for real, in this worker** (Docker available
+locally - the one piece of the "explicitly not verified" list above that
+this environment actually permits): `docker build` of this exact
+Dockerfile completed successfully; the resulting image was run with
+`docker run -p <port>:8000 ...` and its real startup log showed the
+actual agent-server (`OpenHands SDK v1.63.1`), the automation service,
+and the static-server/proxy all starting; `curl` against the running
+container's own `/alive` returned the real agent-server's `200`, and
+`curl` against `/canvas/locales/en/openhands.json` returned the real
+served file containing the new `PAUSE_RUNTIME` key - confirming the
+patched frontend is what the built container actually serves over HTTP,
+not just what the build stage produced on disk. **Still not done:** no
+registry push, no DOKS/Helm install using this image, no browser-driven
+Pause/resume/preview click-through against it, no live DigitalOcean MARS
+VM - all of those remain exactly as listed above.
+
 ## Install the build
 
 ### Standard route: `mars_setup.py check`/`up`

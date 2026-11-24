@@ -1,0 +1,113 @@
+# CUSTOMER OVERLAY for the OFFICIAL openhands chart
+# (oci://ghcr.io/openhands/helm-charts/openhands, version 0.119.0, pinned
+# to this package's appVersion 1.97.1 - see ../../docs/HELM.md for the
+# full `helm upgrade` command). This file is designed to be layered with
+# `-f` ON TOP OF the values this install already uses - it must never be
+# the only values file passed to `helm upgrade`.
+#
+# Scope rule this file follows throughout: ADD only what DigitalOcean MARS
+# itself requires. It does not set, enable, disable or otherwise redecide
+# PostgreSQL/Keycloak/Redis/Valkey/object storage/LiteLLM, this release's
+# database/SSO/filestore selections, or its app/DB ingress configuration -
+# those stay exactly what this existing install already has them as. A
+# separate, clearly-labeled render fixture
+# (helm/values/render-fixture.values.yaml) exists ONLY to make an isolated
+# `helm template` dry run tractable in an evaluation environment with no
+# bundled infra reachable; it is not an install overlay and must not be
+# layered onto a real release.
+#
+# Every <REQUIRED:...> placeholder below is something only the operator
+# can supply (image digests, the real gateway hostnames). See docs/HELM.md
+# "What this values file does not decide for you" for the web_url/
+# APP_ORIGIN verification step this file cannot do for you either.
+
+image:
+  # The SAME licensed Enterprise image this install already pins,
+  # rebuilt with doks/docker/enterprise.Dockerfile (mars_apply_doks.py
+  # layered on top, fail-closed against a base-file mismatch - the build
+  # refuses any base image whose patched files differ from the exact
+  # release this install's current image.tag names). The chart's own
+  # migrate-db init container (charts/openhands/templates/
+  # _init-containers.yaml) runs this same image's `alembic upgrade head`,
+  # so the two additive do_mars_doks_001/do_mars_doks_002 migrations this
+  # image carries are what actually apply - no second migration Job is
+  # introduced here.
+  repository: "<REQUIRED: your MARS-patched image repository>"
+  tag: "<REQUIRED: your MARS-patched image tag, e.g. 1.97.1-mars-doks.N>"
+
+# Required MARS provider config, carried as plain string overrides through
+# the chart's own `env` merge (templates/_env.yaml's `openhands.env`:
+# starts from the chart's defaults, drops any default whose name is also a
+# key here, appends these - "user overrides always win"). None of these
+# need valueFrom/volumes, so no post-render is needed for this block - the
+# one exception (the bootstrap-secret FILE mount) is called out below.
+env:
+  OH_SANDBOX_KIND: openhands.app_server.sandbox.do_mars_sandbox_service.DoMarsSandboxServiceInjector
+  OH_SANDBOX_SPEC_KIND: openhands.app_server.sandbox.do_mars_spec_service.DoMarsSpecServiceInjector
+  DO_MARS_CONFIG_ID: "<REQUIRED: must match helm/charts/mars-doks values.yaml's doMars.configId exactly>"
+  # Public HTTPS origin RETURNED TO BROWSER CLIENTS - DoMarsSandboxServiceInjector.gateway_base_url
+  # builds every sandbox proxy URL a user's browser is given from this
+  # value (do_mars_sandbox_service.py "url=f'{self.gateway_base_url...}/{row.id}/8000'").
+  # It must be internet-reachable; never a cluster-internal Service DNS
+  # name or ClusterIP here - that is DO_MARS_INTERNAL_URL below instead.
+  DO_MARS_GATEWAY_URL: "<REQUIRED: e.g. https://mars-gateway.example.com - the public hostname routed to helm/charts/mars-doks's gateway Ingress>"
+  # In-cluster ClusterIP shortcut for CONTROL-PLANE calls this Deployment's
+  # own app/worker processes make to the gateway (health checks, pause/
+  # resume dispatch - do_mars_sandbox_service.py's optional internal_url
+  # field), so those calls do not round-trip through the public Ingress.
+  # Browser clients never see this value. Update the release name in this
+  # Service DNS name if you install helm/charts/mars-doks under a
+  # different Helm release name than "mars-doks".
+  DO_MARS_INTERNAL_URL: "http://mars-doks-mars-gateway.<REQUIRED: this install's namespace>.svc.cluster.local:8100"
+  DO_MARS_CALLBACK_URL: "<REQUIRED: this install's existing public Enterprise origin that automation-server callbacks already dial - do not introduce a second one; see docs/CALLBACKS.md>"
+  DO_MARS_ENABLE_BROWSER_PREVIEW: "false"
+  DO_MARS_SESSION_TTL_SECONDS: "28800"
+  DO_MARS_TEAM_TOKEN_FILE: /run/secrets/mars_team_token
+  DO_MARS_SESSION_SIGNING_KEY_FILE: /run/secrets/mars_session_signing_key
+  DO_MARS_INIT_API_KEY_FILE: /run/secrets/mars_init_api_key
+  # Gateway-side cookie-domain input (do_mars_proxy.py's APP_ORIGIN /
+  # preview_domain(APP_ORIGIN)) must be byte-identical to whatever this
+  # app's own get_global_config().web_url already resolves to at runtime
+  # for THIS release - this chart does not expose that as a single values
+  # key to read back programmatically (it is not a static env var here;
+  # see docs/HELM.md "What this values file does not decide for you").
+  # Verify the match post-install rather than assuming it from this file
+  # alone.
+  DO_MARS_APP_ORIGIN: "<REQUIRED: this install's existing public app origin, byte-identical to its get_global_config().web_url>"
+  # Opt-in warm pool - disabled by default. Every key here must be
+  # byte-identical to helm/charts/mars-doks values.yaml's doMars.pool.*,
+  # which configures the standalone reconciler that actually creates/
+  # pauses/deletes pool VMs; these copies only control whether
+  # DoMarsSandboxService.start_sandbox (running in this Deployment)
+  # attempts claim_one ahead of its normal create path.
+  DO_MARS_POOL_ENABLED: "false"
+  DO_MARS_POOL_SANDBOX_SPEC_ID: ""
+  DO_MARS_POOL_MIN_HOT: "0"
+  DO_MARS_POOL_MIN_PAUSED_RESERVE: "0"
+  DO_MARS_POOL_MAX_TOTAL: "0"
+
+databaseMigrations:
+  # Deliberately left/confirmed true (the chart's own default): this is
+  # the "let the official chart's migration init run the patched app
+  # image" requirement - it is the only migration runner this package
+  # wires up for a Helm install. Do not add a second one.
+  migrate: true
+
+# Set agent-canvas.image.repository and tag in the site values to the
+# patched Canvas image built with doks/docker/canvas-pilot.Dockerfile.
+# The patched 1.45.0 image built and served the frontend on the AWS
+# worker. The default below keeps the official chart's stock image.
+agent-canvas:
+  staticServer:
+    # A stock agent-canvas chart feature (templates/validations.yaml's own
+    # Canvas guard), not pilot-specific - needed regardless of whether the
+    # pilot image above has been built yet. Once it has, this same value
+    # also satisfies its patched frontend's
+    # VITE_CANVAS_RECOVERY_PILOT_ORIGIN same-origin check (docs/CANVAS.md)
+    # with no further change here. Must be byte-identical to
+    # the browser application origin and webUrl in
+    # helm/charts/mars-doks's own values file - see docs/HELM.md "Single
+    # application, gateway and callback addresses". If this install's agent-canvas already
+    # sets staticServer.lockToCloud to this same origin, this key is a
+    # no-op confirmation, not a change.
+    lockToCloud: "<REQUIRED: same public HTTPS origin as DO_MARS_APP_ORIGIN above>"

@@ -1,0 +1,79 @@
+{{- if .Values.doMars.pool.enabled -}}
+{{- $fullname := include "mars-doks.fullname" . -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}-pool-reconciler
+  labels:
+    {{- include "mars-doks.labels" . | nindent 4 }}
+    app.kubernetes.io/component: pool-reconciler
+spec:
+  # Exactly one: do_mars_pool_reconciler.py takes its own per-tick advisory
+  # lock (see docs/INTEGRATION_SEAMS.md row 6 / test_concurrent_reconciler_
+  # ticks_are_mutually_exclusive), so a second replica would not duplicate
+  # work, but it would double the create/health-check traffic against the
+  # provider and the database for no benefit. Scale by lowering
+  # reconcileIntervalSeconds instead, not by raising this.
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mars-doks
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: pool-reconciler
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mars-doks
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: pool-reconciler
+    spec:
+      # Same fsGroup requirement and 42420 uid/gid convention as
+      # mars-gateway (see gateway-deployment.yaml's comment and
+      # docs/HELM.md "fsGroup must match across both releases") - this
+      # Deployment mounts the same mars-secrets volume at mode 0440.
+      securityContext:
+        runAsUser: 42420
+        runAsGroup: 42420
+        runAsNonRoot: true
+        fsGroup: 42420
+      containers:
+        - name: pool-reconciler
+          image: "{{ required "image.repository is required" .Values.image.repository }}:{{ required "image.tag is required" .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy | default "IfNotPresent" }}
+          command: ["python", "-m", "openhands.app_server.sandbox.do_mars_pool_worker"]
+          env:
+            {{- include "mars-doks.dbEnv" . | nindent 12 }}
+            - name: DO_MARS_TEAM_TOKEN_FILE
+              value: /run/secrets/mars_team_token
+            # Not a separate pool-only id: do_mars_pool_worker.py requires
+            # this directly, the same provider config every non-pool
+            # create_session call uses - see doMars.configId's comment in
+            # values.yaml for why there is no independent pool config id.
+            - name: DO_MARS_CONFIG_ID
+              value: {{ required "doMars.configId is required" .Values.doMars.configId | quote }}
+            {{- include "mars-doks.poolEnv" . | nindent 12 }}
+            - name: DO_MARS_POOL_RECONCILE_INTERVAL_SECONDS
+              value: {{ .Values.doMars.pool.reconcileIntervalSeconds | default 30 | quote }}
+            - name: DO_MARS_POOL_HEALTH_FRESHNESS_SECONDS
+              value: {{ .Values.doMars.pool.healthFreshnessSeconds | default 300 | quote }}
+            - name: DO_MARS_POOL_BOOT_TIMEOUT_SECONDS
+              value: {{ .Values.doMars.pool.bootTimeoutSeconds | default 600 | quote }}
+          volumeMounts:
+            {{- include "mars-doks.secretVolumeMount" . | nindent 12 }}
+          resources:
+            {{- toYaml (.Values.resources | default dict) | nindent 12 }}
+      volumes:
+        {{- include "mars-doks.secretVolume" . | nindent 8 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

@@ -1,0 +1,51 @@
+# RENDER FIXTURE - NOT an install overlay. Do not pass this to a real
+# `helm install`/`helm upgrade`.
+#
+# ../openhands-mars.values.yaml (the real customer overlay) deliberately
+# never sets postgresql/keycloak/redis/valkey/minio/litellm-helm/ingress/
+# externalDatabase/automation.* - those stay whatever this install already
+# has them configured as. But that also means openhands-mars.values.yaml
+# alone cannot be `helm template`d in an empty evaluation environment with
+# none of that bundled infra actually reachable (TLS secrets, Postgres
+# credentials, S3 buckets, etc. all absent here).
+#
+# This file supplies exactly the inputs needed to prove, by rendering
+# alone, that layering openhands-mars.values.yaml renders one official
+# app (openhands), one Automation, one agent-canvas, and no second
+# migration runner - see docs/HELM.md "Render-proof" for the full command
+# and the counts it produced. It is reproducible evidence for THIS
+# package's own claims, standing in for a real customer's already-running
+# install, which this evaluation environment does not have.
+postgresql:
+  enabled: true
+  primary:
+    persistence:
+      enabled: true
+keycloak:
+  enabled: false
+laminar:
+  enabled: false
+litellm-helm:
+  enabled: false
+minio:
+  enabled: false
+redis:
+  enabled: true
+valkey:
+  enabled: false
+ingress:
+  enabled: true
+  host: app.example.com
+automation:
+  enabled: true
+  filestore:
+    type: s3
+    bucket: mars-eval-automation
+    endpoint: https://nyc3.digitaloceanspaces.com
+  database:
+    host: db.example.internal
+    user: automation
+    name: automation
+agent-canvas:
+  ingress:
+    host: app.example.com

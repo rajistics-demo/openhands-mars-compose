@@ -1,0 +1,120 @@
+# Default values for the mars-doks COMPANION chart.
+#
+# This chart no longer renders app/worker/automation-server/Canvas: those
+# are the official `openhands` chart's own Deployments (oci://ghcr.io/
+# openhands/helm-charts/openhands, version 0.119.0, pinned to this
+# package's appVersion 1.97.1). This chart renders only what that chart
+# cannot provide: the authenticated MARS runtime gateway, the opt-in warm
+# pool reconciler, and the preview-domain Ingress for the Canvas live
+# preview. See ../../../docs/HELM.md for the full two-release install
+# flow and ../../../docs/CALLBACKS.md for webUrl/gatewayUrl/callbackUrl.
+#
+# Every operator-required value below is left empty on purpose: templates
+# fail closed (`required ...`) rather than rendering a broken or insecure
+# stack from un-set defaults.
+
+# -- Browser-facing Enterprise app origin (HTTPS). Must be byte-identical
+# to the official chart release's own webUrl-equivalent input (see
+# docs/HELM.md "Single source of truth for WEB_URL") - this chart does not
+# read the other release's values, so keeping them equal is an operator
+# responsibility the install walkthrough checks explicitly.
+webUrl: ""
+# -- Runtime gateway origin (HTTPS), terminating at this chart's own
+# gateway Service/Ingress below.
+gatewayUrl: ""
+# -- Public Enterprise origin automation-server's native completion
+# callbacks dial out to (same value as the official chart's
+# automation.automationBaseUrl).
+callbackUrl: ""
+
+image:
+  pullPolicy: IfNotPresent
+  # -- Built with ../../docker/enterprise.Dockerfile (mars_apply_doks.py
+  # layered on the licensed Enterprise 1.97.1 image referenced by the
+  # official chart's own `image.repository`/`image.tag`). mars-gateway and
+  # mars-pool-reconciler both run this same image with their own command,
+  # exactly like the official chart's app/migrate-db/worker processes do.
+  repository: ""
+  tag: ""
+
+replicaCount:
+  gateway: 1
+
+doMars:
+  # -- DO_MARS_CONFIG_ID: the provider configuration every create_session
+  # call (pool and non-pool) is scoped to. Must be byte-identical to the
+  # official chart release's env.DO_MARS_CONFIG_ID.
+  configId: ""
+  enableBrowserPreview: false
+  # Opt-in warm pool (do_mars_pool_config.py / do_mars_pool_reconciler.py).
+  # Disabled by default; DoMarsSandboxService.start_sandbox (running inside
+  # the official chart's app/worker processes) only attempts claim_one
+  # ahead of its normal create path when pool.enabled is true there too.
+  # There is deliberately no separate "pool config id": claim_one and the
+  # reconciler's own slot-creation call below are both keyed on
+  # doMars.configId above, never an independent label that could drift
+  # from it after a provider-config rotation (see
+  # docs/INTEGRATION_SEAMS.md row 6 and the do_mars_pool_worker/
+  # package_fixes regression tests this reuses).
+  pool:
+    enabled: false
+    sandboxSpecId: ""
+    minHot: 0
+    minPausedReserve: 0
+    maxTotal: 0
+    reconcileIntervalSeconds: 30
+    # Defaults below match do_mars_pool_config.py's own built-in defaults
+    # (DO_MARS_POOL_HEALTH_FRESHNESS_SECONDS / DO_MARS_POOL_BOOT_TIMEOUT_SECONDS);
+    # set here only so they are visible and overridable in one place.
+    healthFreshnessSeconds: 120
+    bootTimeoutSeconds: 300
+
+# -- Bring-your-own managed PostgreSQL for Enterprise state, using the
+# existing Enterprise DB contract. Same host/name as the official chart
+# release's own database.* values; this chart does not deploy PostgreSQL.
+database:
+  host: ""
+  port: 5432
+  name: openhands
+  # -- Secret with keys DB_USER and DB_PASS, for mars-pool-reconciler.
+  existingSecret: ""
+  # -- Optional: a Secret (keys DB_USER/DB_PASS) for a role restricted to
+  # SELECT on v1_remote_sandbox, for mars-gateway only (least privilege -
+  # see docs/CALLBACKS.md "Gateway database role"). Falls back to
+  # database.existingSecret when unset.
+  gatewayExistingSecret: ""
+
+# -- Secret with keys mars_team_token, mars_session_signing_key,
+# mars_init_api_key, mounted into mars-gateway and mars-pool-reconciler.
+# The official chart release's app/worker/automation processes need the
+# same three values mounted too, via this companion chart's post-renderer
+# patch (see ../postrender/README.md) rather than a second copy of this
+# Secret - point both at one Secret object/name.
+secrets:
+  existingSecret: ""
+
+ingress:
+  className: ""
+  annotations: {}
+  gateway:
+    enabled: true
+    # -- Defaults to the host parsed out of gatewayUrl.
+    host: ""
+    tlsSecretName: ""
+  # -- Routing for the Canvas live-preview origin(s)
+  # (preview_domain()/preview_origin() in do_mars_preview.py) - NOT the
+  # official agent-canvas subchart's own /canvas path, which that chart's
+  # own ingress.* values already route. A wildcard host for a shared
+  # install, or a single named host for a disposable test; see
+  # ../../canvas/README.md and compose/Caddyfile.example for the two
+  # documented choices this ports.
+  preview:
+    enabled: false
+    host: ""
+    tlsSecretName: ""
+
+resources: {}
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

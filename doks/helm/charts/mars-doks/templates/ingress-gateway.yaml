@@ -1,0 +1,33 @@
+{{- if .Values.ingress.gateway.enabled -}}
+{{- $fullname := include "mars-doks.fullname" . -}}
+{{- $host := .Values.ingress.gateway.host | default (include "mars-doks.hostFromUrl" (required "gatewayUrl is required" .Values.gatewayUrl)) -}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $fullname }}-gateway
+  labels:
+    {{- include "mars-doks.labels" . | nindent 4 }}
+    app.kubernetes.io/component: gateway
+  annotations:
+    {{- toYaml (.Values.ingress.annotations | default dict) | nindent 4 }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- if .Values.ingress.gateway.tlsSecretName }}
+  tls:
+    - hosts: [{{ $host | quote }}]
+      secretName: {{ .Values.ingress.gateway.tlsSecretName }}
+  {{- end }}
+  rules:
+    - host: {{ $host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $fullname }}-gateway
+                port:
+                  number: 8100
+{{- end }}
