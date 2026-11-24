@@ -142,9 +142,19 @@ services:
   mars-pool-reconciler:
     image: ${MARS_APP_IMAGE:?build docker/enterprise.Dockerfile and set MARS_APP_IMAGE}
     profiles: ['pool']
+    # Same bypass as mars-gateway above: the stock entrypoint.sh aborts with
+    # "must run as root" (it does root-only setup this plain Python worker
+    # never needs - no volumes, no docker socket). Run it unprivileged
+    # instead, same uid/gid 42420 as mars-gateway, which is also what lets
+    # it read mars_team_token below (host file root:42420 0640 per
+    # docs/INSTALL.md "Gateway database role"/INSTALLER_CONTRACT.md).
+    user: openhands
+    entrypoint: []
     command: ['python', '-m', 'openhands.app_server.sandbox.do_mars_pool_worker']
     depends_on:
       db:
+        condition: service_healthy
+      app:
         condition: service_healthy
     environment:
       # Bring-your-own managed PostgreSQL: override DB_HOST/DB_PORT (and

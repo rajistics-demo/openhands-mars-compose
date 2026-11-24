@@ -89,14 +89,25 @@ class PoolCounts:
     paused_reserve: int
     in_flight: int  # creating + booting + pausing + resuming + claiming
     error: int
+    # A DELETING row still holds a real, not-yet-confirmed-gone provider VM
+    # (see do_mars_pool_store.begin_delete / do_mars_pool_reconciler._destroy):
+    # unlike ERROR, it is not "awaiting deletion" in the cheap local-row-only
+    # sense, it IS mid-deletion, and the provider resource behind it may
+    # still exist and still be billing/occupying capacity until a provider
+    # read confirms otherwise. Counted in total_inventory for exactly that
+    # reason - a replenish step must not create new capacity on top of
+    # capacity that has not yet been confirmed freed.
+    deleting: int = 0
 
     @property
     def total_inventory(self) -> int:
-        """Hot + paused + in-flight: everything that counts against the cap.
+        """Hot + paused + in-flight + deleting: everything that counts
+        against the cap.
 
         ERROR rows are excluded: they are awaiting deletion, hold no live
         claimable capacity, and must not block replenishment of real
-        capacity while the reaper catches up.
+        capacity while the reaper catches up. DELETING rows are the
+        opposite case and are included - see the field's own docstring.
         """
 
-        return self.hot_ready + self.paused_reserve + self.in_flight
+        return self.hot_ready + self.paused_reserve + self.in_flight + self.deleting

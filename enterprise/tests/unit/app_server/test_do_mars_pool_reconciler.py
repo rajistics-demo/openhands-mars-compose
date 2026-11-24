@@ -45,13 +45,22 @@ async def _clean_table():
     yield
 
 
+class _Unset:
+    __slots__ = ()
+
+
+_unset = _Unset()
+
+
 @dataclass
 class FakeSession:
     """Duck-typed stand-in for DoMarsSession: the reconciler only ever
-    reads ``.id`` off a provider's create_session() result, so the fake
-    does not need the real dataclass's extra fields."""
+    reads ``.id`` off a provider's create_session() result, and ``.id``/
+    ``.status`` off a get_session() result, so the fake does not need the
+    real dataclass's other fields."""
 
     id: str
+    status: str = 'SESSION_STATUS_READY'
 
 
 @dataclass
@@ -72,10 +81,20 @@ class FakePoolProvider:
     status_checked: list[str] = field(default_factory=list)
 
     dormant_result: bool = True
+    # One value consumed per probe_dormant() call, oldest first; once
+    # exhausted (or for any call if left empty), falls back to
+    # ``dormant_result``. Lets a test drive "not ready yet, then ready"
+    # across successive reconciler ticks without a second fake class.
+    dormant_sequence: list[bool] = field(default_factory=list)
     alive_result: bool = True
     paused_confirm_result: bool = True
     create_should_fail: bool = False
+    # _unset means "behave as today": get_session() echoes the id back with
+    # a READY status. Set to an explicit FakeSession(...) or None (meaning
+    # provider-confirmed-gone) to drive _reconcile_booting's non-ready path.
+    get_session_result: object = _unset
     _paused_ids: set = field(default_factory=set)
+    _dormant_calls: int = 0
 
     async def create_session(self, name: str, config_id: str) -> FakeSession:
         if self.create_should_fail:
@@ -85,6 +104,8 @@ class FakePoolProvider:
         return FakeSession(id=provider_id)
 
     async def get_session(self, session_id: str):
+        if self.get_session_result is not _unset:
+            return self.get_session_result
         return FakeSession(id=session_id)
 
     async def list_sessions_by_name(self, name: str):
@@ -103,7 +124,12 @@ class FakePoolProvider:
 
     async def probe_dormant(self, session_id: str) -> bool:
         self.probed_dormant.append(session_id)
-        return self.dormant_result
+        if self._dormant_calls < len(self.dormant_sequence):
+            result = self.dormant_sequence[self._dormant_calls]
+        else:
+            result = self.dormant_result
+        self._dormant_calls += 1
+        return result
 
     async def probe_alive(self, session_id: str) -> bool:
         self.probed_alive.append(session_id)
@@ -243,6 +269,44 @@ async def test_paused_reserve_is_promoted_to_hot_when_short():
     assert counts.paused_reserve == 0
 
 
+async def test_replenish_from_empty_funds_both_hot_and_paused_reserve():
+    """A cold/empty pool (hot=0, paused=0) with a nonzero
+    min_paused_reserve must eventually reach *both* targets, not just
+    min_hot. Before the fix, _replenish_and_rebalance only ever created
+    while hot_ready < min_hot: once hot reached min_hot with paused still
+    at 0, every branch's guard condition went false and the tick became a
+    permanent no-op, so min_paused_reserve was never funded by a from-empty
+    pool - only by first seeding extra HOT_READY rows directly (see
+    test_excess_hot_is_demoted_toward_paused_reserve's seeded-only setup
+    above). This test starts genuinely empty and drives run_once() tick by
+    tick, with no seeding, until both targets are met.
+    """
+
+    provider = FakePoolProvider()
+    config = make_config(min_hot=1, min_paused_reserve=1, max_total=2)
+    reconciler = make_reconciler(provider, config)
+
+    counts = await _counts()
+    assert counts.total_inventory == 0
+
+    seen_hot_funded = False
+    for _ in range(10):
+        await reconciler.run_once()
+        counts = await _counts()
+        if counts.hot_ready >= 1:
+            seen_hot_funded = True
+        if counts.hot_ready == 1 and counts.paused_reserve == 1:
+            break
+    else:
+        pytest.fail(f'pool never converged to hot=1/paused=1; last counts={counts}')
+
+    assert seen_hot_funded
+    assert counts.hot_ready == 1
+    assert counts.paused_reserve == 1
+    assert counts.total_inventory == 2
+    assert provider.paused  # the extra hot slot was actually demoted, not just created
+
+
 def _an_hour_from_now():
     """Forces _due_for_health_check to treat every slot as due, regardless
     of health_check_interval_seconds, without flaking on real elapsed wall
@@ -309,7 +373,12 @@ async def test_run_once_recovers_a_genuinely_stuck_claim_end_to_end():
     to end through the real recover_stuck_claims code path.
     """
 
-    provider = FakePoolProvider()
+    # get_session_result=None: the provider already confirms the VM gone,
+    # so _confirm_pending_deletions can drop the row within this same
+    # run_once() call rather than leaving it DELETING for a later tick -
+    # same reasoning as test_booting_slot_is_destroyed_when_provider_
+    # confirms_gone.
+    provider = FakePoolProvider(get_session_result=None)
     config = make_config(min_hot=0, max_total=1, replenish_enabled=False, claim_timeout_seconds=1)
     engine = create_async_engine(DSN)
     async with AsyncSession(engine, expire_on_commit=False) as session:
@@ -337,17 +406,135 @@ async def test_run_once_recovers_a_genuinely_stuck_claim_end_to_end():
                 claim_owner_sandbox_id='crashed-owner',
                 claimed_by_user_id='u',
                 claimed_org_id='o',
+                # Backdated directly, rather than advancing the
+                # reconciler's own clock (_an_hour_from_now): this tick
+                # also has to confirm its own DELETING transition, whose
+                # state_changed_at is stamped by the real wall clock - a
+                # mocked-forward self.now() would make that fresh
+                # transition look falsely overdue against
+                # delete_confirm_timeout_seconds and re-issue delete_session
+                # a second time, which is exactly the regression this
+                # backdating avoids while still making the CLAIMING row
+                # itself look stale to claim_timeout_seconds without a
+                # real sleep.
+                state_changed_at=now - timedelta(hours=2),
             )
         )
         await session.commit()
     await engine.dispose()
 
-    reconciler = make_reconciler(provider, config, now=_an_hour_from_now)
+    reconciler = make_reconciler(provider, config)
     report = await reconciler.run_once()
     assert report.recovered_stuck_claims == 1
     assert provider.deleted == ['provider-stuck-claim']
     counts = await _counts()
     assert counts.total_inventory == 0
+
+
+async def test_booting_slot_is_retried_then_promoted_across_ticks():
+    """Repro for the real AWS deployment blocker: the dormant probe issued
+    right after create_session() is False on its first check (a fast probe
+    beating real boot time) and only True on a later one. Before
+    _reconcile_booting existed, nothing in run_once ever looked at a
+    BOOTING slot a second time, so this slot would stay BOOTING forever -
+    this test fails on that old code (report2.created stays 0 and the slot
+    never leaves in_flight).
+    """
+    await _seed_slot('boot-1', PoolSlotState.BOOTING, provider_resource_id='provider-boot-1')
+    provider = FakePoolProvider(dormant_sequence=[False])
+    config = make_config(min_hot=1, max_total=1, replenish_enabled=False)
+    reconciler = make_reconciler(provider, config)
+
+    report1 = await reconciler.run_once()
+    assert report1.boot_failed == 1
+    assert report1.created == 0
+    counts = await _counts()
+    assert counts.in_flight == 1  # still BOOTING - counted, not lost or reaped
+
+    report2 = await reconciler.run_once()
+    assert report2.created == 1
+    assert provider.probed_dormant == ['provider-boot-1', 'provider-boot-1']
+    counts = await _counts()
+    assert counts.hot_ready == 1
+    assert counts.in_flight == 0
+
+
+async def test_booting_slot_is_destroyed_when_provider_confirms_gone():
+    """No point waiting out boot_timeout_seconds for a session the provider
+    has already confirmed does not exist."""
+
+    await _seed_slot('boot-1', PoolSlotState.BOOTING, provider_resource_id='provider-boot-1')
+    provider = FakePoolProvider(dormant_result=False, get_session_result=None)
+    config = make_config(
+        min_hot=0, max_total=1, replenish_enabled=False, boot_timeout_seconds=600
+    )
+    reconciler = make_reconciler(provider, config)
+    report = await reconciler.run_once()
+    assert report.reaped == 1
+    assert provider.deleted == ['provider-boot-1']
+    counts = await _counts()
+    assert counts.total_inventory == 0
+
+
+async def test_booting_slot_past_timeout_is_destroyed_even_with_unknown_status():
+    """A session the provider still reports as merely "not ready" (not
+    confirmed terminal, not confirmed gone) is still destroyed once
+    boot_timeout_seconds has passed - the timeout is the real backstop for
+    an in-progress-looking boot that will in fact never finish."""
+
+    await _seed_slot('boot-1', PoolSlotState.BOOTING, provider_resource_id='provider-boot-1')
+    provider = FakePoolProvider(dormant_result=False)
+    config = make_config(
+        min_hot=0, max_total=1, replenish_enabled=False, boot_timeout_seconds=1
+    )
+    reconciler = make_reconciler(provider, config, now=_an_hour_from_now)
+    report = await reconciler.run_once()
+    assert report.reaped == 1
+    assert provider.deleted == ['provider-boot-1']
+
+
+async def test_booting_slot_within_timeout_is_retained_despite_unknown_status():
+    """The mirror of the timeout test: still within boot_timeout_seconds,
+    an unconfirmed (not terminal, not gone) status must not be destroyed."""
+
+    await _seed_slot('boot-1', PoolSlotState.BOOTING, provider_resource_id='provider-boot-1')
+    provider = FakePoolProvider(dormant_result=False)
+    config = make_config(
+        min_hot=0, max_total=1, replenish_enabled=False, boot_timeout_seconds=600
+    )
+    reconciler = make_reconciler(provider, config)
+    report = await reconciler.run_once()
+    assert report.reaped == 0
+    assert report.boot_failed == 1
+    assert provider.deleted == []
+    counts = await _counts()
+    assert counts.in_flight == 1
+
+
+async def test_reconciler_default_clock_is_timezone_aware():
+    """do_mars_002's pool_slot table columns are all TIMESTAMP WITH TIME
+    ZONE (see the migration), which asyncpg/SQLAlchemy return as
+    timezone-aware datetimes against real PostgreSQL. Every deadline check
+    in this module does ``self.now() - timedelta(...) < slot.<some
+    timestamp column>`` - comparing that against a *naive* datetime.utcnow()
+    raises TypeError('can't compare offset-naive and offset-aware
+    datetimes') on every single call.
+
+    Confirmed on a real deployment against real PostgreSQL: this was never
+    caught by any test in this file because make_reconciler's own default
+    (see above) always supplies an explicit aware ``now`` - this test is
+    the one place that exercises DoMarsPoolReconciler's actual *production*
+    default instead, by never passing ``now`` at all.
+    """
+
+    reconciler = DoMarsPoolReconciler(
+        session_factory=lambda: None,  # never called - default-value check only
+        provider=FakePoolProvider(),
+        config=make_config(),
+        backend='do-mars',
+        config_id='cfg-1',
+    )
+    assert reconciler.now().tzinfo is not None
 
 
 async def test_concurrent_reconciler_ticks_are_mutually_exclusive():

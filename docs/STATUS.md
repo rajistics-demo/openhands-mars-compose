@@ -85,3 +85,32 @@ What remained, and was built this pass, is the install/packaging route for it, f
 **Remains unverified**: the two vitest files named in `docs/CANVAS.md` and the pinned `npm run build` itself (no Canvas source tree or Node 24 toolchain in this environment - the recipe was transcribed and cross-checked against the daytona reference's equivalent doc, not executed here); the stock `canvas-server` image's actual CLI accepting these exact flags end-to-end (the compose test proves the overlay's own YAML and substitutions, using a synthetic stand-in service, not the real image); any live browser verification of the Pause control or embedded preview (barred in this pass - no live DigitalOcean infrastructure, no production access); and everything already listed as unverified in the prior pool entry above, which this pass did not touch.
 
 The final installer accepts the prebuilt Canvas directory in `site.env` and activates the pool service when enabled. The AWS installer suite passed 50 tests with 28 skipped. The skipped cases require the pinned licensed Compose inputs.
+
+
+## Live MARS warm pool and Canvas replay
+
+The combined installer was exercised on an isolated AWS Compose host with
+live two-vCPU, four-GiB MARS VMs and the pinned Canvas bundle. The installed
+stack reached migration `do_mars_002`. The warm case assigned the exact
+provider VM observed in the hot pool before the conversation was requested.
+
+| Browser milestone | Fresh VM | Prestarted VM |
+| --- | ---: | ---: |
+| Native conversation request to Ready | 36.58 s | 22.78 s |
+| Reopen after Pause to visible history | 0.16 s | 0.15 s |
+| Reopen after Pause to a successful embedded preview request | 11.52 s | 10.65 s |
+
+Each column is one run. The browser ran on the AWS test host and the
+conversation used a synthetic history marker without model inference. In
+both cases reopening kept the conversation, provider VM and preview process
+and preserved its in-memory counter. An authenticated preview request
+while paused left the provider VM paused.
+
+A spare was moved into the paused reserve, then back to hot on the same
+provider VM. Setting the targets and cap to zero drained the spare.
+Provider-side confirmation and an empty inventory were both observed.
+
+The test used bundled PostgreSQL. Managed PostgreSQL setup and draining
+before a provider configuration rotation are described in [INSTALL.md](INSTALL.md#warm-pool).
+Workspace recovery after provider expiry and concurrent capacity are
+separate qualification work.

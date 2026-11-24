@@ -33,6 +33,7 @@ git apply --check "$MARS_PACKAGE/canvas/authenticated-preview.patch"
 git apply "$MARS_PACKAGE/canvas/authenticated-preview.patch"
 
 npm ci
+npm run make-i18n
 npx vitest run __tests__/components/features/conversation/conversation-name-with-status.test.tsx \
                 __tests__/components/features/conversation/pilot-recovered-preview.test.tsx
 
@@ -129,19 +130,13 @@ curl -X PATCH "$APP_ORIGIN/api/v1/app-conversations/<conversation-id>" \
 Conversations without this tag only ever get the gateway's resume-and-reconnect
 behavior; nothing about this package's non-pilot sandbox lifecycle changes.
 
-## What is verified where
+## Validation
 
-- The gateway-side preview session exchange, cookie scoping, origin checks,
-  and the paused-sandbox 409 (settled pause is never woken by a preview
-  request) are exercised against real behavior in
-  `enterprise/tests/unit/app_server/test_do_mars_browser_preview.py`.
-- The frontend's origin/port/path matching and credentialed-session gating
-  are exercised by the two vitest files named in the build recipe above,
-  which are not runnable in this environment (no Canvas source tree here);
-  run them during the build step and keep that output as your own evidence.
-- `compose/docker-compose.canvas-pilot.yml` was validated in this
-  environment with real `docker compose config` against a synthetic stub
-  `canvas-server` service standing in for the stock one (which this package
-  does not ship) - this proves the override's YAML, the `--lock-to-cloud`
-  substitution and the bind-mount resolve exactly as written, not that the
-  stock image's actual CLI accepts these exact flags end-to-end.
+The two focused Canvas tests and the pinned production bundle build ran
+on AWS. The standard installer served that bundle on the isolated
+Enterprise Compose stack with live MARS.
+
+The browser test confirmed that Pause kept the original VM paused even
+when the preview was requested. Reopening the same conversation returned
+its stored history and reconnected to the original preview process with
+its in-memory counter intact. [Measured replay](STATUS.md#live-mars-warm-pool-and-canvas-replay)

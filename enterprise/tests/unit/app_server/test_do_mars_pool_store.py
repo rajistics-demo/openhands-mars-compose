@@ -634,7 +634,12 @@ async def test_recovery_lock_skips_a_slot_whose_promotion_is_in_flight():
         session = AsyncSession(engine, expire_on_commit=False)
         try:
             locked = await lock_stale_claiming_slot_for_recovery(
-                session, backend='do-mars', slot_id=claimed_id, older_than=deadline
+                session,
+                backend='do-mars',
+                sandbox_spec_id='do-mars-agent-server',
+                config_id='cfg-1',
+                slot_id=claimed_id,
+                older_than=deadline,
             )
             if locked is None:
                 await session.rollback()
@@ -674,7 +679,12 @@ async def test_recovery_lock_destroys_only_when_genuinely_idle_and_stale(db_sess
     deadline = _utc_now() + timedelta(seconds=1)
 
     locked = await lock_stale_claiming_slot_for_recovery(
-        db_session, backend='do-mars', slot_id=claimed.id, older_than=deadline
+        db_session,
+        backend='do-mars',
+        sandbox_spec_id='do-mars-agent-server',
+        config_id='cfg-1',
+        slot_id=claimed.id,
+        older_than=deadline,
     )
     assert locked is not None
     assert locked.id == claimed.id
@@ -689,7 +699,12 @@ async def test_recovery_lock_ignores_a_slot_not_yet_past_the_deadline(db_session
     not_yet = _utc_now() - timedelta(seconds=1000)
 
     locked = await lock_stale_claiming_slot_for_recovery(
-        db_session, backend='do-mars', slot_id=claimed.id, older_than=not_yet
+        db_session,
+        backend='do-mars',
+        sandbox_spec_id='do-mars-agent-server',
+        config_id='cfg-1',
+        slot_id=claimed.id,
+        older_than=not_yet,
     )
     assert locked is None
     slot = await get_slot(db_session, claimed.id)

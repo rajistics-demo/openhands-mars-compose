@@ -15,8 +15,9 @@ second replica (or a second instance of this same process) simply finds the
 lock held and skips that tick.
 
 Intentionally stdlib/Enterprise-only, no new third-party dependency: reuses
-the same ``DoMarsClient``/``get_do_mars_client`` and ``a_session_maker`` the
-app already depends on.
+the same ``DoMarsClient``/``get_do_mars_client`` and the same
+``get_global_config().db_session.get_async_session_maker()`` session-factory
+source the app already depends on.
 """
 
 import asyncio
@@ -67,11 +68,22 @@ async def run_forever() -> None:
             'not a separate pool-only value)'
         )
 
-    # Local import: storage.database is Enterprise-core, not part of this
-    # overlay, and must not be imported at module scope when
+    # Local import: openhands.app_server.config is Enterprise-core, not part
+    # of this overlay, and must not be imported at module scope when
     # DO_MARS_POOL_ENABLED is unset (e.g. a plain import-check in a unit
     # test environment that lacks the full Enterprise tree).
-    from storage.database import a_session_maker
+    #
+    # get_global_config().db_session is an @contextlib.asynccontextmanager
+    # that *yields* a session - calling it directly does not return an
+    # AsyncSession, so it cannot stand in for DoMarsPoolReconciler's
+    # session_factory, which every tick calls as session_factory() and uses
+    # the result as an AsyncSession with no `async with` (do_mars_pool_reconciler.py).
+    # get_async_session_maker() is the same stock code path the rest of
+    # Enterprise uses to get a plain, repeatedly-callable sessionmaker
+    # instead - call it once up front, not per tick.
+    from openhands.app_server.config import get_global_config
+
+    session_factory = await get_global_config().db_session.get_async_session_maker()
 
     import httpx
 
@@ -84,7 +96,7 @@ async def run_forever() -> None:
             do=get_do_mars_client(do_team_token, http), do_team_token=do_team_token
         )
         reconciler = DoMarsPoolReconciler(
-            session_factory=a_session_maker,
+            session_factory=session_factory,
             provider=provider,
             config=config,
             backend=DO_MARS_BACKEND,

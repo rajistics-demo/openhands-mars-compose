@@ -5,8 +5,8 @@
   "native_enterprise": "implemented",
   "resume_semantics": "same-process",
   "evidence": {
-    "api": "Existing MARS release has a versioned, checksum-verified installer. Historical native pilot verified lifecycle, interactive conversations, and isolated 1/5/10-job cohorts.",
-    "canvas": "Shared Pause and authenticated preview were verified on a separate MARS pilot overlay. The published installer has not reproduced that Canvas run.",
+    "api": "Live native MARS Compose validation assigned an observed hot VM to the original Enterprise conversation and verified pause, promotion and drain of spare inventory.",
+    "canvas": "The combined installer verified Pause, reopening the same conversation, persisted history and an authenticated preview with its process state preserved.",
     "expiry": "Workspace recovery on a replacement VM is untested."
   }
 }

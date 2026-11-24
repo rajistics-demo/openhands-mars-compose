@@ -386,3 +386,21 @@ async def test_pool_claim_is_scoped_to_the_resolved_spec_config_id(async_session
     claim_one_mock.assert_awaited_once()
     assert claim_one_mock.await_args.kwargs['config_id'] == spec.config_id
     assert claim_one_mock.await_args.kwargs['config_id'] != 'default'
+
+
+# NOTE: no executable regression test here for the UUID-org claimed_org_id
+# fix in _start_sandbox_from_pool (do_mars_sandbox_service.py). That
+# module - and this whole test file - require
+# `from openhands.agent_server.utils import utc_now` at module scope,
+# which this sandbox genuinely cannot import (no network access to fetch
+# openhands-agent-server, and it is not part of the stub tree by design -
+# see enterprise/tests/conftest.py's own docstring). This is the exact
+# same documented limitation as session 2's pool_config/PrivateAttr fix in
+# this same file: verified here only by py_compile and manual review of
+# the call site (claimed_org_id=str(org) if org is not None else None,
+# credential_org_id=org left untouched a few lines below for the owned
+# StoredSandbox row's own ORM-typed column), not by a test in this
+# sandbox. An environment with the real Enterprise/agent-server tree
+# should add a test asserting claim_one receives a str even when `org` is
+# a uuid.UUID, and that credential_org_id on the resulting StoredSandbox
+# row is untouched.

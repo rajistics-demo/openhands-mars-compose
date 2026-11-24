@@ -238,13 +238,14 @@ infer "disabled" from `site.env` into "stop the running container" for you.
 **Bring-your-own managed PostgreSQL for the reconciler.** The
 `mars-pool-reconciler` service is new (added by this package, not part of
 the stock Enterprise compose file) and connects to Postgres with its own
-`DB_HOST`/`DB_PORT`/`DB_NAME`/`DB_USER`/`DB_PASS`, independent of however
-app/worker are wired to their database. The defaults (`DB_HOST=db`,
-`DB_PORT=5432`) only work for the bundled `db` Compose service. If your
-Enterprise database is a managed instance instead - under the existing
-Enterprise DB contract - override these in `mars.env` to point at it, and
-confirm the connection is session-pinned: a direct connection, or a pooler
-in *session* pool mode, never *transaction* or *statement* mode. The pool's
+`DB_HOST`/`DB_PORT`/`DB_NAME`/`DB_USER`/`DB_PASS`. The default installer uses
+the bundled `db` Compose service. For an Enterprise deployment that already
+uses managed PostgreSQL, configure the reconciler to use the same application
+database and schema as Enterprise so it sees the migration and Enterprise
+can claim the inventory it creates. The reconciler's database settings alone
+do not migrate the stock stack to managed PostgreSQL. Use a direct connection
+or a pooler in *session* pool mode. Transaction or statement pooling cannot
+preserve the reconciler's session advisory lock. The pool's
 `claim_one`/`promote_claim_to_sandbox`/advisory-lock safety guarantees all
 depend on one statement's lock and a later statement's commit or unlock
 landing on the *same* backend session; a statement- or transaction-pooling

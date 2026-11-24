@@ -149,6 +149,62 @@ async def set_state(
         await db_session.commit()
 
 
+async def set_state_if(
+    db_session: AsyncSession,
+    slot_id: str,
+    *,
+    expected_states: tuple[PoolSlotState, ...],
+    state: PoolSlotState,
+    provider_resource_id: str | None | object = _unset,
+    last_health_ok: bool | None | object = _unset,
+    error_detail: str | None | object = _unset,
+    commit: bool = True,
+) -> bool:
+    """Compare-and-swap: like ``set_state``, but only applies if the row is
+    currently in one of ``expected_states``. Returns ``True`` if the
+    transition was applied, ``False`` if it was not - most commonly because
+    ``claim_one`` already won a race and moved the row to CLAIMING first.
+
+    No ``FOR UPDATE``/``SKIP LOCKED`` needed: a plain ``UPDATE ... WHERE
+    id = ? AND state IN (?)`` is itself safe against a concurrent
+    ``claim_one`` on the same row, because Postgres serializes any two
+    UPDATEs that target the same row - if claim_one's own update is
+    in-flight (uncommitted) when this one is issued, this one simply blocks
+    until claim_one commits (or rolls back), then its WHERE clause is
+    re-evaluated against the now-current (committed) state. If claim_one
+    committed CLAIMING, the WHERE no longer matches and this returns
+    ``False``; if claim_one touched a different row (``SKIP LOCKED`` means
+    it only ever locks rows it does not skip), there was never any
+    contention at all.
+
+    A caller that gets ``False`` back must stop, not retry the same
+    transition or fall back to an unconditional ``set_state``: the row now
+    belongs to whatever concurrent writer won, and is no longer this
+    caller's to act on.
+    """
+
+    values: dict = {'state': state, 'state_changed_at': func.now()}
+    if provider_resource_id is not _unset:
+        values['provider_resource_id'] = provider_resource_id
+    if last_health_ok is not _unset:
+        values['last_health_ok'] = last_health_ok
+        values['last_health_check_at'] = func.now()
+    if error_detail is not _unset:
+        values['error_detail'] = error_detail
+    result = await db_session.execute(
+        update(pool_slot_table)
+        .where(
+            pool_slot_table.c.id == slot_id,
+            pool_slot_table.c.state.in_([s.value for s in expected_states]),
+        )
+        .values(**values)
+    )
+    applied = result.rowcount == 1
+    if commit:
+        await db_session.commit()
+    return applied
+
+
 async def delete_slot(db_session: AsyncSession, slot_id: str, *, commit: bool = True) -> None:
     await db_session.execute(delete(pool_slot_table).where(pool_slot_table.c.id == slot_id))
     if commit:
@@ -199,6 +255,7 @@ async def count_by_state(
         paused_reserve=tally.get(PoolSlotState.PAUSED_RESERVE.value, 0),
         in_flight=sum(tally.get(state.value, 0) for state in in_flight_states),
         error=tally.get(PoolSlotState.ERROR.value, 0),
+        deleting=tally.get(PoolSlotState.DELETING.value, 0),
     )
 
 
@@ -211,9 +268,16 @@ async def select_sweepable(
     *,
     limit: int,
 ) -> list[PoolSlot]:
-    """Unclaimed slots in one of ``states``, oldest first, for a size/health/
-    age sweep. Never selects CLAIMING or CLAIMED: callers pass only states
-    from PoolSlotState.unclaimed_idle, enforced by the reconciler, not here.
+    """Slots in one of ``states``, oldest first, for a size/health/age/boot
+    sweep. A plain unlocked read: safe for every state a caller passes here
+    today because none of them is both externally claimable and reached by
+    this function without a guard elsewhere - PoolSlotState.unclaimed_idle
+    states (HOT_READY/PAUSED_RESERVE/ERROR) are claimable, but every
+    destructive action this module's callers take on a row read here either
+    first re-locks/re-confirms it (see do_mars_pool_reconciler._destroy and
+    its callers) or targets BOOTING, which claim_one never selects. Never
+    pass CLAIMING or CLAIMED: both are already claimed/being claimed, and
+    this function applies no lock or compare-and-swap of its own.
     """
 
     rows = (
@@ -397,13 +461,28 @@ async def promote_claim_to_sandbox(
 
 
 async def lock_stale_claiming_slot_for_recovery(
-    db_session: AsyncSession, *, backend: str, slot_id: str, older_than: datetime
+    db_session: AsyncSession,
+    *,
+    backend: str,
+    sandbox_spec_id: str,
+    config_id: str,
+    slot_id: str,
+    older_than: datetime,
 ) -> PoolSlot | None:
     """Re-lock and re-confirm one CLAIMING candidate immediately before a
     caller destroys it. ``select_stale_claiming`` is a cheap unlocked scan
     used only to find candidate ids; it is never itself sufficient grounds
     to destroy a VM, because a promotion can start and finish between that
     scan and any later action.
+
+    ``sandbox_spec_id``/``config_id`` pin this to the exact provider-owned
+    config identity this reconciler instance is scoped to - the same
+    (backend, sandbox_spec_id, config_id) triple every other query in this
+    module filters on (see the module docstring). Without them, a
+    reconciler running one spec/config could destroy a stale CLAIMING row
+    that in fact belongs to a *different* spec/config sharing the same
+    backend, simply because both happened to use the same ``slot_id``
+    namespace and pass the deadline check at the same moment.
 
     ``FOR UPDATE SKIP LOCKED`` makes this safe without blocking: if
     ``promote_claim_to_sandbox`` is concurrently holding this exact row's
@@ -429,6 +508,8 @@ async def lock_stale_claiming_slot_for_recovery(
             .where(
                 pool_slot_table.c.id == slot_id,
                 pool_slot_table.c.backend == backend,
+                pool_slot_table.c.sandbox_spec_id == sandbox_spec_id,
+                pool_slot_table.c.config_id == config_id,
                 pool_slot_table.c.state == PoolSlotState.CLAIMING.value,
                 pool_slot_table.c.state_changed_at < older_than,
             )
@@ -439,9 +520,18 @@ async def lock_stale_claiming_slot_for_recovery(
 
 
 async def select_stale_claiming(
-    db_session: AsyncSession, backend: str, older_than: datetime
+    db_session: AsyncSession,
+    backend: str,
+    sandbox_spec_id: str,
+    config_id: str,
+    older_than: datetime,
 ) -> list[PoolSlot]:
-    """CLAIMING rows whose promotion never finished within the deadline.
+    """CLAIMING rows whose promotion never finished within the deadline,
+    scoped to one exact (backend, sandbox_spec_id, config_id) - the same
+    provider-owned config identity every other query in this module is
+    scoped to (see the module docstring). A reconciler instance must never
+    even consider, let alone destroy, a stale CLAIMING row that belongs to
+    a different spec/config sharing the same backend.
 
     This is an unlocked scan for *candidates* only - it never itself
     justifies destroying anything, since a promotion can start and finish
@@ -455,6 +545,8 @@ async def select_stale_claiming(
         await db_session.execute(
             select(pool_slot_table).where(
                 pool_slot_table.c.backend == backend,
+                pool_slot_table.c.sandbox_spec_id == sandbox_spec_id,
+                pool_slot_table.c.config_id == config_id,
                 pool_slot_table.c.state == PoolSlotState.CLAIMING.value,
                 pool_slot_table.c.state_changed_at < older_than,
             )

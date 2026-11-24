@@ -25,7 +25,7 @@ from urllib.parse import urlsplit
 
 import httpx
 from fastapi import Request
-from pydantic import Field, SecretStr
+from pydantic import Field, PrivateAttr, SecretStr
 
 from openhands.agent_server.utils import utc_now
 from openhands.app_server.errors import SandboxDeleteRetryError, SandboxError
@@ -499,7 +499,18 @@ class DoMarsSandboxService(ManagedSandboxService):
             config_id=spec.config_id,
             claim_owner_sandbox_id=sid,
             claimed_by_user_id=user,
-            claimed_org_id=org,
+            # do_mars_pool_slot.claimed_org_id is VARCHAR (do_mars_002's
+            # migration), but Enterprise's real UserContext hands this
+            # method a uuid.UUID, not a str, despite this method's own
+            # `org: str | None` annotation - confirmed on a real
+            # deployment: asyncpg rejected the claim with "expected str,
+            # got UUID" on every single pool warm-start, past the point
+            # the reconciler had already done its job and produced a
+            # HOT_READY slot. str(org) here is scoped to this one
+            # VARCHAR-typed claim column; credential_org_id below stays
+            # the native value, unchanged, for the owned StoredSandbox
+            # row's own ORM-typed column.
+            claimed_org_id=str(org) if org is not None else None,
             min_health_check_after=utc_now()
             - timedelta(seconds=self.pool_config.health_freshness_seconds),
             states=(PoolSlotState.HOT_READY,),
@@ -828,10 +839,16 @@ class DoMarsSandboxServiceInjector(ManagedSandboxServiceInjector):
     callback_url: str | None = Field(
         default_factory=lambda: os.getenv('DO_MARS_CALLBACK_URL')
     )
-    # Disabled unless every DO_MARS_POOL_* setting opts in (see
-    # do_mars_pool_config.py); DoMarsPoolConfig.from_env() never raises for
-    # the all-unset/disabled case, only once DO_MARS_POOL_ENABLED=true.
-    pool_config: DoMarsPoolConfig = Field(default_factory=DoMarsPoolConfig.from_env)
+    # A PrivateAttr, not a model field: Enterprise's env/config typing
+    # introspection walks every injector's public field schema at startup,
+    # and raised `unknown_type` on a nested DoMarsPoolConfig there, aborting
+    # app boot. A leading-underscore PrivateAttr is invisible to
+    # model_fields/model_json_schema (pydantic v2) while keeping the same
+    # fail-fast-at-construction timing the field had: from_env() still runs
+    # once, right here, when Enterprise builds this injector from env vars.
+    # It never raises for the all-unset/disabled case, only once
+    # DO_MARS_POOL_ENABLED=true (do_mars_pool_config.py).
+    _pool_config: DoMarsPoolConfig = PrivateAttr(default_factory=DoMarsPoolConfig.from_env)
 
     async def inject(
         self, state: InjectorState, request: Request | None = None
@@ -865,5 +882,5 @@ class DoMarsSandboxServiceInjector(ManagedSandboxServiceInjector):
                 internal_url=self.internal_url,
                 preview_domain=preview_domain(get_global_config().web_url or ''),
                 lifecycle=self.lifecycle,
-                pool_config=self.pool_config,
+                pool_config=self._pool_config,
             )

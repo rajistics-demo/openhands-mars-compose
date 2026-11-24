@@ -81,6 +81,25 @@ class DoMarsPoolConfig:
     max_slot_age_seconds: int = 6 * 60 * 60
     boot_timeout_seconds: int = 300
     claim_timeout_seconds: int = 120
+    # How long a slot may sit in DELETING - provider delete issued, not yet
+    # confirmed gone by a provider read - before a tick starts logging it as
+    # needing operator attention. Never causes the local row to be dropped
+    # on its own: do_mars_pool_reconciler._confirm_pending_deletions keeps
+    # retrying the confirmation read (and re-issuing delete) every tick
+    # forever past this bound, because "retain until an exact provider read
+    # confirms missing or destroyed" (see do_mars_pool_store.set_state_if's
+    # DELETING contract) must hold even when that confirmation is very
+    # late, not just within some window.
+    delete_confirm_timeout_seconds: int = 300
+    # Mirrors delete_confirm_timeout_seconds for PAUSING/RESUMING: DO's
+    # pause/resume control-plane calls settle asynchronously, so a single
+    # immediate confirm check right after issuing one would spuriously
+    # mark a merely-slow (not actually failed) operation as ERROR. Past
+    # this bound with still no confirmation, the slot IS marked ERROR
+    # (unlike a pending delete, there is no provider-owned resource
+    # identity at risk here - do_mars_pool_reconciler._reap then reclaims
+    # it through the ordinary ERROR path, same as any other dead slot).
+    control_op_confirm_timeout_seconds: int = 120
     max_concurrent_creates_per_tick: int = 1
     max_concurrent_pauses_per_tick: int = 2
 
@@ -106,6 +125,8 @@ class DoMarsPoolConfig:
             ('max_slot_age_seconds', self.max_slot_age_seconds),
             ('boot_timeout_seconds', self.boot_timeout_seconds),
             ('claim_timeout_seconds', self.claim_timeout_seconds),
+            ('delete_confirm_timeout_seconds', self.delete_confirm_timeout_seconds),
+            ('control_op_confirm_timeout_seconds', self.control_op_confirm_timeout_seconds),
         ):
             if value <= 0:
                 raise PoolConfigError(f'{name} must be > 0')
@@ -140,6 +161,12 @@ class DoMarsPoolConfig:
             boot_timeout_seconds=_env_int('DO_MARS_POOL_BOOT_TIMEOUT_SECONDS', 300, ge=1),
             claim_timeout_seconds=_env_int(
                 'DO_MARS_POOL_CLAIM_TIMEOUT_SECONDS', 120, ge=1
+            ),
+            delete_confirm_timeout_seconds=_env_int(
+                'DO_MARS_POOL_DELETE_CONFIRM_TIMEOUT_SECONDS', 300, ge=1
+            ),
+            control_op_confirm_timeout_seconds=_env_int(
+                'DO_MARS_POOL_CONTROL_OP_CONFIRM_TIMEOUT_SECONDS', 120, ge=1
             ),
             max_concurrent_creates_per_tick=_env_int(
                 'DO_MARS_POOL_MAX_CONCURRENT_CREATES', 1, ge=1

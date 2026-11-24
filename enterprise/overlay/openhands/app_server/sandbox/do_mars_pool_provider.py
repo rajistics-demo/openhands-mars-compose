@@ -89,9 +89,21 @@ class DoMarsPoolProviderAdapter:
 
     async def probe_dormant(self, session_id: str) -> bool:
         tunnel_url = self.do.port_forward_url(session_id, 8000)
+        # tunnel_http_request's own keyword is do_bearer_token (see
+        # do_mars_tunnel.py's signature, and DoMarsSandboxService's own two
+        # call sites for the same correct keyword) - passing it under this
+        # adapter's own field name (do_team_token) instead raised
+        # TypeError on every single call, always swallowed by this
+        # method's try/except caller as a plain "not ready", never
+        # surfaced anywhere. Confirmed on a real DO MARS deployment: this
+        # made _reconcile_booting (and _create_one's own first probe)
+        # treat a guest that was already dormant-ready as still booting
+        # forever, which is the live AWS blocker this whole patch exists
+        # to fix in the first place - this adapter bug was masking that
+        # fix from ever actually working end to end.
         probe = await tunnel_http_request(
             tunnel_url,
-            do_team_token=self.do_team_token,
+            do_bearer_token=self.do_team_token,
             http_host='localhost',
             method='GET',
             path='/api/init',
