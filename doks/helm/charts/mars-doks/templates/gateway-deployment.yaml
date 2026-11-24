@@ -64,9 +64,9 @@ spec:
             - name: DO_MARS_APP_ORIGIN
               value: {{ required "webUrl is required" .Values.webUrl | quote }}
             - name: DO_MARS_TEAM_TOKEN_FILE
-              value: /run/secrets/mars_team_token
+              value: /run/mars-secrets/mars_team_token
             - name: DO_MARS_SESSION_SIGNING_KEY_FILE
-              value: /run/secrets/mars_session_signing_key
+              value: /run/mars-secrets/mars_session_signing_key
           volumeMounts:
             {{- include "mars-doks.secretVolumeMount" . | nindent 12 }}
           ports:

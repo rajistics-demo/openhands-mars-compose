@@ -119,6 +119,6 @@ mars_team_token / mars_session_signing_key / mars_init_api_key.
 
 {{- define "mars-doks.secretVolumeMount" -}}
 - name: mars-secrets
-  mountPath: /run/secrets
+  mountPath: /run/mars-secrets
   readOnly: true
 {{- end -}}

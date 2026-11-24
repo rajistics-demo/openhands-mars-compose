@@ -44,7 +44,7 @@ spec:
           env:
             {{- include "mars-doks.dbEnv" . | nindent 12 }}
             - name: DO_MARS_TEAM_TOKEN_FILE
-              value: /run/secrets/mars_team_token
+              value: /run/mars-secrets/mars_team_token
             # Not a separate pool-only id: do_mars_pool_worker.py requires
             # this directly, the same provider config every non-pool
             # create_session call uses - see doMars.configId's comment in

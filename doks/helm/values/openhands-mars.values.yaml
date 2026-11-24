@@ -42,8 +42,6 @@ image:
 # need valueFrom/volumes, so no post-render is needed for this block - the
 # one exception (the bootstrap-secret FILE mount) is called out below.
 env:
-  OH_SANDBOX_KIND: openhands.app_server.sandbox.do_mars_sandbox_service.DoMarsSandboxServiceInjector
-  OH_SANDBOX_SPEC_KIND: openhands.app_server.sandbox.do_mars_spec_service.DoMarsSpecServiceInjector
   DO_MARS_CONFIG_ID: "<REQUIRED: must match helm/charts/mars-doks values.yaml's doMars.configId exactly>"
   # Public HTTPS origin RETURNED TO BROWSER CLIENTS - DoMarsSandboxServiceInjector.gateway_base_url
   # builds every sandbox proxy URL a user's browser is given from this
@@ -62,9 +60,9 @@ env:
   DO_MARS_CALLBACK_URL: "<REQUIRED: this install's existing public Enterprise origin that automation-server callbacks already dial - do not introduce a second one; see docs/CALLBACKS.md>"
   DO_MARS_ENABLE_BROWSER_PREVIEW: "false"
   DO_MARS_SESSION_TTL_SECONDS: "28800"
-  DO_MARS_TEAM_TOKEN_FILE: /run/secrets/mars_team_token
-  DO_MARS_SESSION_SIGNING_KEY_FILE: /run/secrets/mars_session_signing_key
-  DO_MARS_INIT_API_KEY_FILE: /run/secrets/mars_init_api_key
+  DO_MARS_TEAM_TOKEN_FILE: /run/mars-secrets/mars_team_token
+  DO_MARS_SESSION_SIGNING_KEY_FILE: /run/mars-secrets/mars_session_signing_key
+  DO_MARS_INIT_API_KEY_FILE: /run/mars-secrets/mars_init_api_key
   # Gateway-side cookie-domain input (do_mars_proxy.py's APP_ORIGIN /
   # preview_domain(APP_ORIGIN)) must be byte-identical to whatever this
   # app's own get_global_config().web_url already resolves to at runtime

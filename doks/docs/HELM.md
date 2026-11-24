@@ -17,9 +17,10 @@ Two independent Helm releases make up a MARS-enabled DOKS install:
 
 Use the existing release name, namespace, and site values for OpenHands.
 Install the companion chart in the same namespace. Run the commands below
-from the repository root. The post-renderer needs Python 3 and PyYAML on
-the machine running Helm. Keep it in the Helm invocation for subsequent
-upgrades while MARS is enabled.
+from the repository root with Helm 3. The post-renderer needs Python 3 and
+PyYAML. Keep it in every Helm upgrade while MARS is enabled. Helm 4
+requires a [post-renderer plugin](https://helm.sh/docs/plugins/migrate/)
+for this helper. The commands below use Helm 3's executable interface.
 
 Build and push the [Enterprise image](../docker/enterprise.Dockerfile)
 to a registry your cluster can pull from:
@@ -33,34 +34,30 @@ Set `ENTERPRISE_IMAGE` to a fully qualified registry name and tag before
 running those commands. For the optional Pause and preview UI, also
 [build and push the Canvas image](../../docs/CANVAS.md#packaged-as-a-docker-image).
 
-## Why a post-renderer, and why only for one Deployment
+## How the post-renderer configures MARS
 
-The official chart's `openhands` Deployment
-(`charts/openhands/templates/deployment.yaml`) takes `env` as a plain
-`{name, value}` list (`templates/_env.yaml`'s `openhands.env` helper) and
-has no `extraVolumes`/`extraVolumeMounts` value. `DO_MARS_TEAM_TOKEN_FILE`
-etc. are themselves just path strings set through `env`; only the volume
-that puts a file at that path needs a change this chart's own values
-cannot express. `automation` and `agent-canvas` do not read those files
-and are left untouched - confirmed by inspecting the rendered manifest
-(see "Render-proof" below): after the post-renderer runs, the
-`mars-secrets` volume/mount appears on `Deployment/openhands` only.
+The official chart renders its general environment values as strings.
+The post-renderer sets the MARS sandbox and Sandbox Spec injectors and
+mounts a Kubernetes Secret on the Enterprise containers that use them.
+This includes the app and its migration init container. The mount uses
+`/run/mars-secrets` so it can coexist with the Kubernetes service-account
+mount. Canvas, Automation and Helm upgrade hooks use their own
+configuration. The Secret files are group-readable under the official
+chart's Enterprise pod security context.
 
-This is the Helm-documented post-rendering mechanism
-(https://helm.sh/docs/topics/advanced/#post-rendering): a script that
-reads the whole rendered multi-document manifest on stdin and writes the
-modified stream to stdout. `mount_mars_secrets.py` fails closed if it
-finds zero or more than one Deployment named `openhands` in that stream,
-rather than silently mounting the secret nowhere or in the wrong place.
+The post-renderer verifies the intended Enterprise Deployment and
+container name before emitting any manifests. For an installation that
+overrides those names, configure `MARS_POSTRENDER_DEPLOYMENT` and
+`MARS_POSTRENDER_CONTAINER` explicitly.
 
 ## Scope rule for `openhands-mars.values.yaml`
 
 `helm/values/openhands-mars.values.yaml` adds only what MARS itself
 requires: `image.repository`/`tag` (the MARS-patched Enterprise image),
 `env.DO_MARS_*` (provider config), and `agent-canvas.image.*` +
-`agent-canvas.staticServer.lockToCloud` (the Canvas pilot build). It
-never sets `postgresql`/`keycloak`/`redis`/`valkey`/`minio`/
-`litellm-helm`, `ingress.*`, `externalDatabase.*`, or `automation.*`
+`agent-canvas.staticServer.lockToCloud` (the Canvas pilot build). The post-renderer sets the MARS injector selectors. The values file
+leaves `postgresql`/`keycloak`/`redis`/`valkey`/`minio`/
+`litellm-helm`, `ingress.*`, `externalDatabase.*`, and `automation.*`
 (other than nothing - Automation in 1.97.1 dispatches runs against
 whatever `OH_SANDBOX_KIND` the app is configured with and needs no
 MARS-specific values of its own). Those all stay exactly what this
@@ -284,6 +281,31 @@ this repo") and was not attempted. Until an operator forks that template
 mitigation: run manually, once, right after every upgrade that changes
 `lockToCloud` - not continuously, and not enforced by Kubernetes itself.
 
+## Live EKS smoke test
+
+One test on November 24, 2026 used the official OpenHands chart 0.119.0,
+patched Enterprise 1.97.1 and patched Canvas 1.45.0 in a disposable EKS
+namespace. It used a fresh PostgreSQL database, one ready MARS VM, a
+synthetic chat message, and a small live preview process. The browser
+launch called Enterprise's native conversation start endpoint.
+
+| Observation | Time |
+| --- | ---: |
+| Native warm launch to Ready | 20.84 s |
+| Reopen click to chat history visible | 0.13 s |
+| Reopen click to successful resume response | 5.01 s |
+| Reopen click to a successful interaction in the embedded preview | 10.78 s |
+
+The provider ID matched the VM in the warm pool before launch. Clicking
+Pause in Canvas paused that VM. A preview request during the pause was
+rejected and left the VM paused. Reopening the original conversation
+restored the same VM, preview process and in-memory counter. An
+anonymous request to the live preview returned HTTP 401.
+
+This run used public HTTPS with existing DNS and an exact-host
+certificate for the test preview. Validate private-only callback DNS,
+routing and TLS separately on DOKS. The test used no paid model inference.
+
 ## Render-proof
 
 Evidence this package's own claims rest on (raw render output kept local
@@ -311,13 +333,9 @@ Verified against the published chart tarball
   registry.example.com/mars-enterprise:1.97.1-mars-doks.1` (the test
   fill-in's placeholder MARS-patched image), i.e. the *same* image this
   overlay sets for the app container.
-- After the post-renderer: `mars-secrets` appears in `Deployment/openhands`'s
-  `volumes` and in its `openhands` container's `volumeMounts`; `automation`
-  and `agent-canvas` are unaffected (`automation` keeps only its own
-  `workspace` volume, `agent-canvas` keeps none).
-- All six `env.DO_MARS_*` values set in `openhands-mars.values.yaml` land
-  on the `openhands` container exactly as supplied, confirming the chart's
-  user-override-wins merge in `templates/_env.yaml` behaves as documented.
+- The post-renderer adds the MARS injector selectors and Secret mount to
+  patched Enterprise containers that declare the MARS token file.
+  Canvas and Automation keep their own environment and volumes.
 - `helm template` of `helm/charts/mars-doks` with the exact copy-ready
   values above (gatewayUrl/database/doMars/secrets/ingress all filled in)
   succeeds with no `required` failures, and both `mars-gateway`'s and
@@ -329,12 +347,9 @@ Verified against the published chart tarball
 
 ### What this is not evidence of
 
-This is a template-rendering proof against representative placeholder
-values, run with no live DOKS cluster, no real managed PostgreSQL/object
-storage, and no real DigitalOcean API access. It does not verify a
-Kubernetes API server accepts these manifests, that the patched image
-actually boots against a real database, or that the gateway/preview flows
-work end-to-end against real infrastructure. See [versions and validation](VERSIONS.md) and the [callback preflight](CALLBACKS.md).
+The render checks use representative placeholder values. For the live
+EKS result, see the smoke test above. Use the
+[callback preflight](CALLBACKS.md) on an actual DOKS target.
 
 ## `render-fixture.values.yaml`
 
