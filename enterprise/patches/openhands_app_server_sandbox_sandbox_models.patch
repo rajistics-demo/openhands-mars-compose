@@ -1,0 +1,12 @@
+--- a/openhands/app_server/sandbox/sandbox_models.py
++++ b/openhands/app_server/sandbox/sandbox_models.py
+@@ -78,6 +78,9 @@
+     )
+     sandbox_spec_id: str
+     status: SandboxStatus
++    supports_runtime_pause: bool = Field(
++        default=False, description='Whether this provider supports native runtime pause and resume.'
++    )
+     session_api_key: str | None = Field(
+         description=(
+             'Key to access sandbox, to be added as an `X-Session-API-Key` header '

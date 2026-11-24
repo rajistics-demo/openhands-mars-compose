@@ -1,6 +1,6 @@
 """Authenticated Agent Server bridge on a separate runtime origin.
 
-Only port 8000 is exposed. Preview ports need a separate capability design.
+Agent Server uses port 8000. Browser previews are opt-in on per-sandbox origins.
 A stored session-key hash is checked before opening any provider connection;
 the gateway never loads the encrypted plaintext key or forwards app cookies.
 Run uvicorn with access logs disabled because legacy WS query keys are secrets.
@@ -16,9 +16,11 @@ from urllib.parse import parse_qsl, unquote, urlencode
 import aiohttp
 from fastapi import FastAPI, HTTPException, Request, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from sqlalchemy import select
+from starlette.applications import Starlette
 from starlette.background import BackgroundTask
+from starlette.routing import Host, Mount
 from starlette.websockets import WebSocketDisconnect
 
 from openhands.app_server.sandbox.do_mars_client import DO_MARS_BACKEND, DoMarsClient
@@ -26,6 +28,16 @@ from openhands.app_server.sandbox.do_mars_credentials import valid_session_key
 from openhands.app_server.sandbox.do_mars_diagnostics import (
     error_class,
     log_diagnostic,
+)
+from openhands.app_server.sandbox.do_mars_preview import (
+    PREVIEW_COOKIE,
+    PREVIEW_PORT,
+    PREVIEW_SESSION_PATH,
+    PREVIEW_TTL,
+    issue_preview_cookie,
+    preview_domain,
+    preview_origin,
+    valid_preview_cookie,
 )
 from openhands.app_server.sandbox.do_mars_secrets import read_secret
 from openhands.app_server.sandbox.do_mars_tunnel import tcp_forward
@@ -159,9 +171,9 @@ def forwarded_headers(raw: list[tuple[bytes, bytes]]) -> dict[str, str]:
     }
 
 
-def _tunnel_url(row: GatewayRow) -> str:
+def _tunnel_url(row: GatewayRow, port: int = 8000) -> str:
     # URL validation is shared with the control client; no token needed here.
-    return DoMarsClient.port_forward_url(row.provider_resource_id, 8000)
+    return DoMarsClient.port_forward_url(row.provider_resource_id, port)
 
 
 @app.get('/alive')
@@ -176,7 +188,16 @@ async def alive():
 async def proxy_http(request: Request, sandbox_id: str, port: int, path: str):
     _safe_path(path)
     row = await authorize(sandbox_id, port, request.headers.get('x-session-api-key'))
-    tunnel = tcp_forward(_tunnel_url(row), read_secret('DO_MARS_TEAM_TOKEN'))
+    return await _proxy_guest_http(request, row, port, path)
+
+
+async def _proxy_guest_http(
+    request: Request,
+    row: GatewayRow,
+    port: int,
+    path: str,
+):
+    tunnel = tcp_forward(_tunnel_url(row, port), read_secret('DO_MARS_TEAM_TOKEN'))
     origin = await tunnel.__aenter__()
     client = aiohttp.ClientSession(
         timeout=aiohttp.ClientTimeout(total=None, connect=20), auto_decompress=False
@@ -197,11 +218,20 @@ async def proxy_http(request: Request, sandbox_id: str, port: int, path: str):
     try:
         query = request.scope['query_string'].decode('ascii')
         target = origin + '/' + path + ('?' + query if query else '')
+        headers = forwarded_headers(request.scope['headers'])
+        if port == PREVIEW_PORT:
+            # Browser and provider auth must never land in the preview app.
+            headers = {
+                key: value
+                for key, value in headers.items()
+                if key.lower()
+                not in {'x-session-api-key', 'x-access-token', 'x-forwarded-host'}
+            }
         response = await client.request(
             request.method,
             target,
             data=request.stream(),
-            headers=forwarded_headers(request.scope['headers']),
+            headers=headers,
             allow_redirects=False,
         )
         if response.status >= 400:
@@ -219,16 +249,26 @@ async def proxy_http(request: Request, sandbox_id: str, port: int, path: str):
             finally:
                 await close()
 
-        return StreamingResponse(
+        headers_out = {
+            key: value
+            for key, value in response.headers.items()
+            if key.lower() not in HOP_HEADERS
+            and (port != PREVIEW_PORT or not key.lower().startswith('access-control-'))
+        }
+        streamed = StreamingResponse(
             chunks(),
             status_code=response.status,
-            headers={
-                k: v
-                for k, v in response.headers.items()
-                if k.lower() not in HOP_HEADERS
-            },
+            headers=headers_out,
             background=BackgroundTask(close),
         )
+        if port == PREVIEW_PORT:
+            streamed.headers.append(
+                'Content-Security-Policy',
+                f"frame-ancestors {APP_ORIGIN}; worker-src 'none'",
+            )
+            streamed.headers['Cache-Control'] = 'private, no-store'
+            streamed.headers['Referrer-Policy'] = 'no-referrer'
+        return streamed
     except (aiohttp.ClientError, TimeoutError) as exc:
         log_diagnostic(
             'do_mars.gateway_guest_transport_error',
@@ -361,3 +401,84 @@ async def proxy_websocket(websocket: WebSocket, sandbox_id: str, port: int, path
             await websocket.close()
         except RuntimeError:
             pass
+
+
+def build_preview_app(domain: str) -> FastAPI:
+    preview_app = FastAPI(
+        docs_url=None, redoc_url=None, openapi_url=None, redirect_slashes=False
+    )
+    preview_app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[APP_ORIGIN],
+        allow_methods=['POST'],
+        allow_headers=['X-Session-API-Key'],
+        allow_credentials=True,
+    )
+
+    def preview_target(request: Request) -> tuple[str, str]:
+        sandbox_id = request.path_params['sandbox_id']
+        try:
+            origin = preview_origin(domain, sandbox_id)
+        except ValueError:
+            raise HTTPException(404) from None
+        if request.headers.get('host') != origin.removeprefix('https://'):
+            raise HTTPException(404)
+        return sandbox_id, origin
+
+    @preview_app.post(PREVIEW_SESSION_PATH)
+    async def start_preview_session(request: Request):
+        sandbox_id, _ = preview_target(request)
+        if request.headers.get('origin') != APP_ORIGIN:
+            raise HTTPException(403)
+        row = await authorize(
+            sandbox_id, 8000, request.headers.get('x-session-api-key')
+        )
+        response = Response(status_code=204, headers={'Cache-Control': 'no-store'})
+        response.set_cookie(
+            PREVIEW_COOKIE,
+            issue_preview_cookie(
+                sandbox_id, row.provider_resource_id, row.session_api_key_hash
+            ),
+            max_age=PREVIEW_TTL,
+            secure=True,
+            httponly=True,
+            samesite='strict',
+        )
+        return response
+
+    @preview_app.api_route(
+        '/{path:path}', methods=['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE']
+    )
+    async def preview_http(request: Request, path: str):
+        sandbox_id, origin = preview_target(request)
+        _safe_path(path)
+        if unquote('/' + path).rstrip('/') == PREVIEW_SESSION_PATH:
+            raise HTTPException(404)
+        if (
+            request.method not in ('GET', 'HEAD')
+            and request.headers.get('origin') != origin
+        ):
+            raise HTTPException(403)
+        row = await _load_row(sandbox_id)
+        if not row:
+            raise HTTPException(404)
+        cookie = request.cookies.get(PREVIEW_COOKIE)
+        if not cookie or not valid_preview_cookie(
+            cookie, sandbox_id, row.provider_resource_id, row.session_api_key_hash
+        ):
+            raise HTTPException(401, 'Preview session required')
+        if row.lifecycle_state != LifecycleState.RUNNING:
+            raise HTTPException(409, 'Sandbox is not running; resume it in Enterprise')
+        return await _proxy_guest_http(request, row, PREVIEW_PORT, path)
+
+    return preview_app
+
+
+_preview_domain = preview_domain(APP_ORIGIN)
+if _preview_domain:
+    app = Starlette(
+        routes=[
+            Host('{sandbox_id}.' + _preview_domain, build_preview_app(_preview_domain)),
+            Mount('/', app),
+        ]
+    )

@@ -1,0 +1,42 @@
+# Opt-in overlay: serve the patched Canvas 1.35 pilot build (Pause control +
+# authenticated live preview, see docs/CANVAS.md) from the stock canvas-server
+# container instead of its built-in bundle. This never replaces the image -
+# it only overrides the static-server command to point --dir at a bind-mounted
+# host build directory and keeps --lock-to-cloud bound to the real HTTPS
+# app origin, the same way the stock command already does (see the
+# "Canvas --lock-to-cloud is not APP_ORIGIN" check in mars_setup.py, which
+# this overlay's merged config still satisfies).
+#
+# Layer this file LAST, after docker-compose.yml, docker-compose.mars.yml
+# (if --stage mars) and docker-compose.site.yml, using the same --env-file
+# list mars_setup.py already rendered (private/stack.env, private/compose.env).
+# See docs/CANVAS.md for building CANVAS_PILOT_BUILD and the full command.
+#
+# `mars_setup.py check --stage mars` and `up --mars` layer this file for you
+# once CANVAS_PILOT_BUILD is set in site.env (Install.config_files), and
+# validate both --lock-to-cloud and the bind mount against it
+# (verify_rendered in mars_setup.py). Building the bundle itself stays a
+# manual, separate step (docs/CANVAS.md): CANVAS_PILOT_BUILD is a local
+# directory path, not a registry image, so there is nothing for the
+# installer's own image/checksum pinning to verify automatically. Layering
+# this file by hand, outside the installer, still works identically for an
+# operator who does not want CANVAS_PILOT_BUILD tracked in site.env.
+services:
+  canvas-server:
+    command:
+      - --port
+      - '8000'
+      - --host
+      - 0.0.0.0
+      - --dir
+      - /opt/agent-canvas/frontend
+      - --base-path
+      - /canvas
+      - --lock-to-cloud
+      - ${WEB_URL:?set WEB_URL (same value mars_setup.py rendered into private/compose.env)}
+      - --disable-telemetry
+    volumes:
+      - type: bind
+        source: ${CANVAS_PILOT_BUILD:?set CANVAS_PILOT_BUILD to the absolute path of the patched Canvas build (docs/CANVAS.md)}
+        target: /opt/agent-canvas/frontend
+        read_only: true

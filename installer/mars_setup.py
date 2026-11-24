@@ -39,6 +39,7 @@ PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 LOCK_PATH = PACKAGE_ROOT / 'installer' / 'release.lock.json'
 SITE_OVERLAY_SRC = PACKAGE_ROOT / 'installer' / 'compose' / 'docker-compose.site.yml'
 MARS_OVERLAY_SRC = PACKAGE_ROOT / 'compose' / 'docker-compose.mars.yml'
+CANVAS_OVERLAY_SRC = PACKAGE_ROOT / 'compose' / 'docker-compose.canvas-pilot.yml'
 ENV_SPEC_TEMPLATE = PACKAGE_ROOT / 'templates' / 'environment.example.yaml'
 
 # Immutable pins. release.lock.json must agree with every one of them.
@@ -58,7 +59,12 @@ AUTOMATION_BASE_IMAGE = (
     '@sha256:fb722b6fcde1a7fa67a15c40eb83af0ca23f1c111d0bc745f3b77a8b1bd33afa'
 )
 MIGRATION_BASE = '213'
-MIGRATION_PACKAGE = 'do_mars_001'
+# The prior package's terminal revision: an existing install upgrading from
+# before the warm-pool migration lands here until the MARS app's next start
+# runs do_mars_002 automatically (same transient-state handling already used
+# for MIGRATION_BASE itself, below).
+MIGRATION_PACKAGE_PREV = 'do_mars_001'
+MIGRATION_PACKAGE = 'do_mars_002'
 MAX_SANDBOXES = 10
 GATEWAY_UID = 42420
 GATEWAY_GID = 42420
@@ -84,8 +90,19 @@ SITE_OPTIONAL = (
     'ENABLE_POSTHOG_ANALYTICS',
     'POSTHOG_CLIENT_KEY',
     'DO_MARS_SESSION_TTL_SECONDS',
+    'DO_MARS_ENABLE_BROWSER_PREVIEW',
     'AUTOMATION_RUN_KEY_TTL_SECONDS',
     'OH_SANDBOX_LIFECYCLE_IDLE_SECONDS',
+    # Opt-in warm pool (do_mars_pool_config.py) and Canvas pilot bundle
+    # (docs/CANVAS.md). Both are inert unless set; see validate_site and
+    # Install.config_files/compose_args for how each is wired into check/up.
+    'DO_MARS_POOL_ENABLED',
+    'DO_MARS_POOL_SANDBOX_SPEC_ID',
+    'DO_MARS_POOL_MIN_HOT',
+    'DO_MARS_POOL_MIN_PAUSED_RESERVE',
+    'DO_MARS_POOL_MAX_TOTAL',
+    'DO_MARS_POOL_RECONCILE_INTERVAL_SECONDS',
+    'CANVAS_PILOT_BUILD',
 )
 # Read only by render-env-spec; never forwarded into the Compose environment.
 SITE_MANIFEST_ONLY = ('MARS_LLM_EGRESS_HOSTS',)
@@ -314,11 +331,49 @@ def validate_site(site: dict[str, str], stage: str) -> dict[str, str]:
         ('DO_MARS_SESSION_TTL_SECONDS', 300, 86400),
         ('AUTOMATION_RUN_KEY_TTL_SECONDS', 0, 86400),
         ('OH_SANDBOX_LIFECYCLE_IDLE_SECONDS', 60, 604800),
+        # Conservative, matching compose/mars.env.example's own ${VAR:-0}/
+        # ${VAR:-30} defaults: unset means the pool stays fully inert.
+        ('DO_MARS_POOL_MIN_HOT', 0, 100000),
+        ('DO_MARS_POOL_MIN_PAUSED_RESERVE', 0, 100000),
+        ('DO_MARS_POOL_MAX_TOTAL', 0, 100000),
+        ('DO_MARS_POOL_RECONCILE_INTERVAL_SECONDS', 1, 86400),
     ):
         if key in site and (not site[key].isdigit() or not low <= int(site[key]) <= high):
             raise SetupError(f'{key} must be an integer in {low}..{high}')
     if site.get('ENABLE_POSTHOG_ANALYTICS', 'true') not in ('true', 'false'):
         raise SetupError('ENABLE_POSTHOG_ANALYTICS must be true or false')
+    if site.get('DO_MARS_ENABLE_BROWSER_PREVIEW', 'false') not in ('true', 'false'):
+        raise SetupError('DO_MARS_ENABLE_BROWSER_PREVIEW must be true or false')
+    if site.get('DO_MARS_POOL_ENABLED', 'false') not in ('true', 'false'):
+        raise SetupError('DO_MARS_POOL_ENABLED must be true or false')
+    pool_enabled = site.get('DO_MARS_POOL_ENABLED', 'false') == 'true'
+    if pool_enabled and not site.get('DO_MARS_POOL_SANDBOX_SPEC_ID'):
+        raise SetupError('DO_MARS_POOL_SANDBOX_SPEC_ID is required when DO_MARS_POOL_ENABLED is true')
+    min_hot = int(site.get('DO_MARS_POOL_MIN_HOT', '0'))
+    min_paused = int(site.get('DO_MARS_POOL_MIN_PAUSED_RESERVE', '0'))
+    max_total = int(site.get('DO_MARS_POOL_MAX_TOTAL', '0'))
+    if pool_enabled and max_total < min_hot + min_paused:
+        raise SetupError(
+            'DO_MARS_POOL_MAX_TOTAL must be >= DO_MARS_POOL_MIN_HOT + DO_MARS_POOL_MIN_PAUSED_RESERVE '
+            f'({min_hot + min_paused}), got {max_total}'
+        )
+    canvas_dir = site.get('CANVAS_PILOT_BUILD', '')
+    if canvas_dir:
+        if not DIR_RE.match(canvas_dir):
+            raise SetupError('CANVAS_PILOT_BUILD must be an absolute path (letters, digits, . _ - and /)')
+        build_dir = Path(canvas_dir)
+        if not build_dir.is_dir():
+            raise SetupError(f'CANVAS_PILOT_BUILD {canvas_dir} is not a directory')
+        index = build_dir / 'index.html'
+        try:
+            readable = index.is_file() and os.access(index, os.R_OK)
+        except OSError:
+            readable = False
+        if not readable:
+            raise SetupError(
+                f'CANVAS_PILOT_BUILD {canvas_dir} has no readable index.html '
+                '(not a `npm run build` output? see docs/CANVAS.md)'
+            )
     llm_hosts = validate_llm_egress_hosts(
         site.get('MARS_LLM_EGRESS_HOSTS', ''), (app_host, runtime_host)
     )
@@ -502,6 +557,7 @@ class Install:
         self.stock = self.compose_dir / 'docker-compose.yml'
         self.site_overlay = self.compose_dir / 'docker-compose.site.yml'
         self.mars_overlay = self.compose_dir / 'docker-compose.mars.yml'
+        self.canvas_overlay = self.compose_dir / 'docker-compose.canvas-pilot.yml'
         self.secrets_dir = path / 'secrets'
 
     # state ------------------------------------------------------------
@@ -593,17 +649,29 @@ class Install:
         state['derived_sha256'] = sha256_bytes(data)
         self.save_state(state)
 
-    def config_files(self, stage: str) -> list[Path]:
-        return [self.stock] + ([self.mars_overlay] if stage == 'mars' else []) + [self.site_overlay]
+    def config_files(self, stage: str, site: dict[str, str]) -> list[Path]:
+        files = [self.stock] + ([self.mars_overlay] if stage == 'mars' else []) + [self.site_overlay]
+        # Opt-in: layering the canvas-pilot overlay only when CANVAS_PILOT_BUILD
+        # is set (docs/CANVAS.md) keeps every install that never sets it
+        # byte-for-byte what it was before this setting existed.
+        if stage == 'mars' and site.get('CANVAS_PILOT_BUILD'):
+            files.append(self.canvas_overlay)
+        return files
 
-    def compose_args(self, state: dict, stage: str) -> list[str]:
+    def compose_args(self, state: dict, stage: str, site: dict[str, str]) -> list[str]:
         args = ['compose', '-p', state['project'], '--project-directory', str(self.compose_dir)]
-        for f in self.config_files(stage):
+        for f in self.config_files(stage, site):
             args += ['-f', str(f)]
-        return args + ['--env-file', str(self.stack_env), '--env-file', str(self.compose_env)]
+        args += ['--env-file', str(self.stack_env), '--env-file', str(self.compose_env)]
+        # mars-pool-reconciler carries `profiles: ['pool']` in docker-compose.mars.yml
+        # precisely so an operator who never sets DO_MARS_POOL_ENABLED never gets
+        # an extra running container; only activate the profile once they opted in.
+        if stage == 'mars' and site.get('DO_MARS_POOL_ENABLED') == 'true':
+            args += ['--profile', 'pool']
+        return args
 
     def owned_config_files(self) -> set[str]:
-        return {str(self.stock), str(self.site_overlay), str(self.mars_overlay)}
+        return {str(self.stock), str(self.site_overlay), str(self.mars_overlay), str(self.canvas_overlay)}
 
 
 # ------------------------------------------------------------ init
@@ -626,6 +694,17 @@ def site_env_text(project: str, app_origin: str, runtime_origin: str, config_id:
         '# DO_MARS_SESSION_TTL_SECONDS=28800\n'
         '# AUTOMATION_RUN_KEY_TTL_SECONDS=3600\n'
         '# OH_SANDBOX_LIFECYCLE_IDLE_SECONDS=1800\n'
+        '# Opt-in warm pool (docs/INSTALL.md "Warm pool"); disabled by default,\n'
+        '# every value below inert unless DO_MARS_POOL_ENABLED=true:\n'
+        '# DO_MARS_POOL_ENABLED=false\n'
+        '# DO_MARS_POOL_SANDBOX_SPEC_ID=\n'
+        '# DO_MARS_POOL_MIN_HOT=0\n'
+        '# DO_MARS_POOL_MIN_PAUSED_RESERVE=0\n'
+        '# DO_MARS_POOL_MAX_TOTAL=0\n'
+        '# DO_MARS_POOL_RECONCILE_INTERVAL_SECONDS=30\n'
+        '# Opt-in pinned Canvas pilot build (docs/CANVAS.md); absolute path to an\n'
+        '# `npm run build` output directory, unset leaves canvas-server unchanged:\n'
+        '# CANVAS_PILOT_BUILD=\n'
         '# Optional MARS guest egress for LLM calls: the exact hostname(s) of the LLM\n'
         '# gateway/provider your resolved model profile calls (a provider connection can\n'
         '# override the default; do not guess from the model name). Plain comma-separated\n'
@@ -749,7 +828,11 @@ def cmd_init(args) -> int:
         create_exclusive(path, value, 0o600)
         report.append(('created', path))
 
-    for src, dest in ((SITE_OVERLAY_SRC, install.site_overlay), (MARS_OVERLAY_SRC, install.mars_overlay)):
+    for src, dest in (
+        (SITE_OVERLAY_SRC, install.site_overlay),
+        (MARS_OVERLAY_SRC, install.mars_overlay),
+        (CANVAS_OVERLAY_SRC, install.canvas_overlay),
+    ):
         report.append((write_if_absent_or_same(dest, src.read_bytes(), 0o644), dest))
 
     if state is None:
@@ -833,9 +916,16 @@ def verify_rendered(cfg: dict, stage: str, site: dict[str, str], stack: dict[str
     services = cfg.get('services') or {}
     origin = site['APP_ORIGIN']
     host = validate_origin(origin, 'APP_ORIGIN')
-    expected_services = set(BASELINE_SERVICES) | ({'mars-gateway'} if stage == 'mars' else set())
+    pool_enabled = stage == 'mars' and site.get('DO_MARS_POOL_ENABLED') == 'true'
+    expected_services = (
+        set(BASELINE_SERVICES)
+        | ({'mars-gateway'} if stage == 'mars' else set())
+        | ({'mars-pool-reconciler'} if pool_enabled else set())
+    )
     if set(services) != expected_services:
-        bad.append('merged services differ from the expected stock set' + (' plus mars-gateway' if stage == 'mars' else ''))
+        bad.append('merged services differ from the expected stock set'
+                   + (' plus mars-gateway' if stage == 'mars' else '')
+                   + (' plus mars-pool-reconciler' if pool_enabled else ''))
 
     def expect(cond: bool, msg: str) -> None:
         if not cond:
@@ -886,6 +976,10 @@ def verify_rendered(cfg: dict, stage: str, site: dict[str, str], stack: dict[str
     expect(auto.get('AUTOMATION_BASE_URL') == origin, 'AUTOMATION_BASE_URL (native callback) is not the public APP_ORIGIN')
     expect(auto.get('AUTOMATION_SANDBOX_OPENHANDS_API_URL') == origin, 'guest API URL is not the public APP_ORIGIN')
     expect(auto.get('AUTOMATION_SANDBOX_INTERNAL_URL') == '', 'AUTOMATION_SANDBOX_INTERNAL_URL is not empty')
+    pool_min_hot = site.get('DO_MARS_POOL_MIN_HOT', '0')
+    pool_min_paused = site.get('DO_MARS_POOL_MIN_PAUSED_RESERVE', '0')
+    pool_max_total = site.get('DO_MARS_POOL_MAX_TOTAL', '0')
+    pool_spec_id = site.get('DO_MARS_POOL_SANDBOX_SPEC_ID', '')
     for name in ('app', 'worker'):
         env = _env(services, name)
         expect(env.get('OH_SANDBOX_MAX_NUM_SANDBOXES') == str(MAX_SANDBOXES), f'{name} sandbox cap is not {MAX_SANDBOXES}')
@@ -894,12 +988,44 @@ def verify_rendered(cfg: dict, stage: str, site: dict[str, str], stack: dict[str
         expect(env.get('DO_MARS_CALLBACK_URL') == origin, f'{name} DO_MARS_CALLBACK_URL is not APP_ORIGIN')
         vols = services.get(name, {}).get('volumes') or []
         expect(not any('docker.sock' in json.dumps(v) for v in vols), f'{name} still mounts the Docker socket')
+        # Same site keys claim_one (do_mars_sandbox_service.py) reads at
+        # construction time; a mismatch here means the pool and the
+        # non-pool create path would disagree about enabled/spec/sizing.
+        expect(env.get('DO_MARS_POOL_ENABLED') == ('true' if pool_enabled else 'false'),
+               f'{name} DO_MARS_POOL_ENABLED does not match site.env')
+        if pool_enabled:
+            expect(env.get('DO_MARS_POOL_SANDBOX_SPEC_ID') == pool_spec_id,
+                   f'{name} DO_MARS_POOL_SANDBOX_SPEC_ID mismatch')
+            expect(env.get('DO_MARS_POOL_MIN_HOT') == pool_min_hot, f'{name} DO_MARS_POOL_MIN_HOT mismatch')
+            expect(env.get('DO_MARS_POOL_MIN_PAUSED_RESERVE') == pool_min_paused,
+                   f'{name} DO_MARS_POOL_MIN_PAUSED_RESERVE mismatch')
+            expect(env.get('DO_MARS_POOL_MAX_TOTAL') == pool_max_total, f'{name} DO_MARS_POOL_MAX_TOTAL mismatch')
+    if pool_enabled:
+        pool = _env(services, 'mars-pool-reconciler')
+        expect(pool.get('DO_MARS_POOL_ENABLED') == 'true', 'mars-pool-reconciler DO_MARS_POOL_ENABLED is not true')
+        expect(pool.get('DO_MARS_CONFIG_ID') == site['DO_MARS_CONFIG_ID'], 'mars-pool-reconciler DO_MARS_CONFIG_ID mismatch')
+        expect(pool.get('DO_MARS_POOL_SANDBOX_SPEC_ID') == pool_spec_id,
+               'mars-pool-reconciler DO_MARS_POOL_SANDBOX_SPEC_ID mismatch')
+        pool_ports = services.get('mars-pool-reconciler', {}).get('ports') or []
+        expect(not pool_ports, 'mars-pool-reconciler publishes a port (it should expose none)')
     gw = _env(services, 'mars-gateway')
     expect(gw.get('DO_MARS_APP_ORIGIN') == origin, 'mars-gateway DO_MARS_APP_ORIGIN is not APP_ORIGIN')
     expect(gw.get('DB_USER') == (stack.get('MARS_GATEWAY_DB_USER') or 'openhands'), 'mars-gateway DB_USER is unexpected')
     gw_ports = services.get('mars-gateway', {}).get('ports') or []
     expect([str(p.get('published')) for p in gw_ports] == [site['MARS_GATEWAY_HOST_PORT']],
            'mars-gateway is not published on MARS_GATEWAY_HOST_PORT')
+
+    canvas_build = site.get('CANVAS_PILOT_BUILD', '')
+    if canvas_build:
+        canvas_vols = services.get('canvas-server', {}).get('volumes') or []
+        expect(
+            any(
+                isinstance(v, dict) and v.get('type') == 'bind' and v.get('source') == canvas_build
+                and v.get('target') == '/opt/agent-canvas/frontend' and v.get('read_only') is True
+                for v in canvas_vols
+            ),
+            'canvas-server is not bind-mounting CANVAS_PILOT_BUILD read-only at /opt/agent-canvas/frontend',
+        )
     return bad
 
 
@@ -954,8 +1080,8 @@ def _secret_file_problems(secrets_dir: Path) -> list[str]:
     return bad
 
 
-def db_query(install: Install, state: dict, stage: str, sql: str) -> str | None:
-    res = run_docker(install.compose_args(state, stage) + [
+def db_query(install: Install, state: dict, stage: str, sql: str, site: dict[str, str]) -> str | None:
+    res = run_docker(install.compose_args(state, stage, site) + [
         'exec', '-T', 'db', 'psql', '-U', 'openhands', '-d', 'openhands', '-v', 'ON_ERROR_STOP=1', '-tA', '-c', sql,
     ], timeout=60)
     if res.returncode != 0:
@@ -963,8 +1089,8 @@ def db_query(install: Install, state: dict, stage: str, sql: str) -> str | None:
     return res.stdout.strip()
 
 
-def service_health(install: Install, state: dict, stage: str) -> dict[str, tuple[str, str]]:
-    res = run_docker(install.compose_args(state, stage) + ['ps', '--all', '--format', 'json'])
+def service_health(install: Install, state: dict, stage: str, site: dict[str, str]) -> dict[str, tuple[str, str]]:
+    res = run_docker(install.compose_args(state, stage, site) + ['ps', '--all', '--format', 'json'])
     if res.returncode != 0:
         raise SetupError('docker compose ps failed (is the daemon reachable?)')
     out = {}
@@ -1010,7 +1136,11 @@ def run_check(install: Install, stage: str) -> tuple[int, dict | None]:
     state = r.step('installer state', lambda: install.load_state(lock))
     if not isinstance(state, dict):
         return r.failures, None
-    for src, dest in ((SITE_OVERLAY_SRC, install.site_overlay), (MARS_OVERLAY_SRC, install.mars_overlay)):
+    for src, dest in (
+        (SITE_OVERLAY_SRC, install.site_overlay),
+        (MARS_OVERLAY_SRC, install.mars_overlay),
+        (CANVAS_OVERLAY_SRC, install.canvas_overlay),
+    ):
         if dest.is_symlink() or not dest.is_file() or dest.read_bytes() != src.read_bytes():
             r.fail(f'{dest.name} differs from this package')
     if install.stock.is_symlink() or not install.stock.is_file() or sha256_file(install.stock) != COMPOSE_SHA256:
@@ -1039,7 +1169,7 @@ def run_check(install: Install, stage: str) -> tuple[int, dict | None]:
     except SetupError as exc:
         r.fail(str(exc))
         return r.failures, state
-    res = run_docker(install.compose_args(state, stage) + ['config', '--format', 'json'])
+    res = run_docker(install.compose_args(state, stage, site) + ['config', '--format', 'json'])
     if res.returncode != 0:
         r.fail('compose merge failed (output withheld because it may contain secrets; '
                'run compose-command and inspect privately)')
@@ -1083,7 +1213,7 @@ def run_check(install: Install, stage: str) -> tuple[int, dict | None]:
             else:
                 r.ok(f'local image {tag} is the image built for this install')
         try:
-            health = service_health(install, state, 'baseline')
+            health = service_health(install, state, 'baseline', site)
         except SetupError as exc:
             r.fail(str(exc))
             health = {}
@@ -1093,28 +1223,36 @@ def run_check(install: Install, stage: str) -> tuple[int, dict | None]:
                 r.fail(f'baseline service {svc} is {st}{"/" + hl if hl else ""} (start and verify the stock baseline first)')
         if health and all(health.get(s, ('',))[0] == 'running' for s in BASELINE_SERVICES):
             r.ok('baseline services running and healthy')
-        rev = db_query(install, state, 'baseline', 'select version_num from alembic_version')
+        rev = db_query(install, state, 'baseline', 'select version_num from alembic_version', site)
         if rev is None or not all(REVISION_RE.match(x) for x in rev.split('\n')) or '\n' in rev or not rev:
             r.fail('could not read a single alembic_version from the db service')
-        elif rev not in (MIGRATION_BASE, MIGRATION_PACKAGE):
-            r.fail(f'database revision {rev} is unsupported; this package needs {MIGRATION_BASE} or {MIGRATION_PACKAGE} '
-                   'and will not stamp, downgrade or overwrite it')
+        elif rev not in (MIGRATION_BASE, MIGRATION_PACKAGE_PREV, MIGRATION_PACKAGE):
+            r.fail(f'database revision {rev} is unsupported; this package needs {MIGRATION_BASE}, '
+                   f'{MIGRATION_PACKAGE_PREV} or {MIGRATION_PACKAGE} and will not stamp, downgrade or overwrite it')
         else:
-            note = ' (do_mars_001 is applied by the MARS app at start)' if rev == MIGRATION_BASE else ''
+            if rev == MIGRATION_BASE:
+                note = f' ({MIGRATION_PACKAGE_PREV} then {MIGRATION_PACKAGE} are applied by the MARS app at start)'
+            elif rev == MIGRATION_PACKAGE_PREV:
+                note = f' (upgrading from a prior install; {MIGRATION_PACKAGE} is applied by the MARS app at start)'
+            else:
+                note = ''
             r.ok(f'database revision {rev}{note}')
             state['last_db_revision'] = rev
         role = stack.get('MARS_GATEWAY_DB_USER', '')
         if not role:
-            r.warn('mars-gateway uses the shared application DB role (evaluation default); '
-                   'see INSTALLER_CONTRACT.md for the least-privilege follow-up after do_mars_001')
-        elif rev != MIGRATION_PACKAGE:
-            r.fail('MARS_GATEWAY_DB_USER is set but the database is not at do_mars_001 yet; '
-                   'leave it unset for the first activation')
+            r.warn(f'mars-gateway uses the shared application DB role (evaluation default); '
+                   f'see INSTALLER_CONTRACT.md for the least-privilege follow-up after {MIGRATION_PACKAGE_PREV}')
+        elif rev not in (MIGRATION_PACKAGE_PREV, MIGRATION_PACKAGE):
+            # The gateway's role check below reads columns do_mars_001 added
+            # to v1_remote_sandbox; do_mars_002 only adds the unrelated pool
+            # table, so either package revision has what this check needs.
+            r.fail(f'MARS_GATEWAY_DB_USER is set but the database is not at {MIGRATION_PACKAGE_PREV} or '
+                   f'{MIGRATION_PACKAGE} yet; leave it unset for the first activation')
         else:
             q = ("select has_column_privilege('{r}','public.v1_remote_sandbox','session_api_key_hash','SELECT')::int"
                  "||has_column_privilege('{r}','public.v1_remote_sandbox','session_api_key','SELECT')::int"
                  "||has_table_privilege('{r}','public.v1_remote_sandbox','UPDATE')::int").format(r=role)
-            got = db_query(install, state, 'baseline', q)
+            got = db_query(install, state, 'baseline', q, site)
             if got != '100':
                 r.fail(f'gateway role {role} missing or not least-privilege (needs column SELECT only)')
             else:
@@ -1170,22 +1308,23 @@ def cmd_build(args) -> int:
     return 0
 
 
-def compose_up(install: Install, state: dict, stage: str) -> None:
-    res = run_docker(install.compose_args(state, stage) + ['up', '-d', '--no-build'], timeout=7200)
+def compose_up(install: Install, state: dict, stage: str, site: dict[str, str]) -> None:
+    res = run_docker(install.compose_args(state, stage, site) + ['up', '-d', '--no-build'], timeout=7200)
     output = redact((res.stdout or '') + (res.stderr or ''), install.secret_values())
     print(output.rstrip())
     if res.returncode != 0:
         raise SetupError(f'docker compose up failed for stage {stage}; nothing was removed or reset')
 
 
-def refuse_stock_after_mars(install: Install, state: dict) -> None:
-    """Stock 1.88.0 cannot start on do_mars_001 (ROLLBACK.md); never switch back automatically."""
+def refuse_stock_after_mars(install: Install, state: dict, site: dict[str, str]) -> None:
+    """Stock 1.88.0 cannot start on do_mars_001/do_mars_002 (ROLLBACK.md); never switch back automatically."""
     if state.get('mars_attestation') or state.get('mars_up_at'):
         raise SetupError('MARS activation was started for this install; starting stock images now would run them '
-                         'against do_mars_001. Follow docs/ROLLBACK.md manually; nothing was started')
+                         f'against {MIGRATION_PACKAGE_PREV} or {MIGRATION_PACKAGE}. Follow docs/ROLLBACK.md '
+                         'manually; nothing was started')
     if not state.get('baseline_up_at'):
         return
-    rev = db_query(install, state, 'baseline', 'select version_num from alembic_version')
+    rev = db_query(install, state, 'baseline', 'select version_num from alembic_version', site)
     if rev != MIGRATION_BASE:
         raise SetupError(f'database revision is {rev if rev and REVISION_RE.match(rev) else "unreadable"}, '
                          f'not {MIGRATION_BASE}; refusing to (re)start stock images. Nothing was started')
@@ -1203,11 +1342,14 @@ def cmd_up(args) -> int:
     failures, state = run_check(install, stage)
     if failures or state is None:
         raise SetupError(f'check --stage {stage} failed; nothing was started')
+    # run_check already validated site.env moments ago; re-read it (cheap,
+    # read-only) rather than widen run_check's return value for this one use.
+    site = install.read_site()
     if stage == 'baseline':
-        refuse_stock_after_mars(install, state)
+        refuse_stock_after_mars(install, state, site)
     state['compose_owned_intent'] = {
         'at': utc_now(), 'project': state['project'],
-        'config_files': [str(f) for f in install.config_files(stage)],
+        'config_files': [str(f) for f in install.config_files(stage, site)],
     }
     install.save_state(state)
     if stage == 'mars':
@@ -1218,7 +1360,7 @@ def cmd_up(args) -> int:
             'db_revision_before': state.get('last_db_revision'),
         }
         install.save_state(state)
-    compose_up(install, state, stage)
+    compose_up(install, state, stage, site)
     state[f'{stage}_up_at'] = utc_now()
     install.save_state(state)
     if stage == 'baseline':
@@ -1228,7 +1370,8 @@ def cmd_up(args) -> int:
         print('  3. back up the openhands and automations databases')
         print('  4. build, render-env-spec, create the MARS config, fill secrets, check --stage mars')
     else:
-        print('\nMARS overlay started. Run `status` until alembic_version is do_mars_001 and services are healthy,')
+        print(f'\nMARS overlay started. Run `status` until alembic_version is {MIGRATION_PACKAGE} and services '
+              'are healthy,')
         print('route RUNTIME_ORIGIN to 127.0.0.1:MARS_GATEWAY_HOST_PORT, then follow docs/INSTALL.md step 7.')
     return 0
 
@@ -1237,13 +1380,14 @@ def cmd_status(args) -> int:
     lock = load_lock()
     install = Install(args.dir)
     state = install.load_state(lock)
+    site = install.read_site()
     stage = 'mars' if state.get('mars_up_at') else 'baseline'
     if not install.compose_env.exists():
         raise SetupError('private/compose.env missing; run check first')
     print(f'project {state["project"]}  stage {stage}  dir {install.dir}')
-    for svc, (st, hl) in sorted(service_health(install, state, stage).items()):
+    for svc, (st, hl) in sorted(service_health(install, state, stage, site).items()):
         print(f'{svc:18} {st}{" (" + hl + ")" if hl else ""}')
-    rev = db_query(install, state, stage, 'select version_num from alembic_version')
+    rev = db_query(install, state, stage, 'select version_num from alembic_version', site)
     print(f'alembic_version   {rev if rev and REVISION_RE.match(rev) else "unavailable"}')
     return 0
 
@@ -1252,7 +1396,8 @@ def cmd_compose_command(args) -> int:
     lock = load_lock()
     install = Install(args.dir)
     state = install.load_state(lock)
-    print(' '.join(['docker'] + install.compose_args(state, args.stage)))
+    site = install.read_site()
+    print(' '.join(['docker'] + install.compose_args(state, args.stage, site)))
     print('# Paths only. Add ps/logs/exec yourself; `config` output contains secrets: never paste or publish it.')
     return 0
 

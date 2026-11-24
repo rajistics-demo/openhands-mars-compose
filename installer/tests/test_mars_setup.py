@@ -15,6 +15,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import ClassVar
 from unittest import mock
 
 HERE = Path(__file__).resolve().parent
@@ -380,7 +381,8 @@ class CheckAndUp(Base):
     def compose_config(self, stage):
         inst = ms.Install(str(self.dir))
         state = inst.load_state(ms.load_lock())
-        res = ms.run_docker(inst.compose_args(state, stage) + ['config', '--format', 'json'])
+        site = inst.read_site()
+        res = ms.run_docker(inst.compose_args(state, stage, site) + ['config', '--format', 'json'])
         self.assertEqual(res.returncode, 0)
         return json.loads(res.stdout)
 
@@ -659,7 +661,7 @@ class CheckAndUp(Base):
         state = json.loads((self.dir / 'state.json').read_text())
         self.assertNotIn('baseline_up_at', state)
         self.assertEqual(state['compose_owned_intent']['project'], 'marstest')
-        owned = [str(f) for f in ms.Install(str(self.dir)).config_files('baseline')]
+        owned = [str(f) for f in ms.Install(str(self.dir)).config_files('baseline', {})]
         # Compose created the volumes and some containers before failing.
         self.save_scenario(up_rc=0, volumes=['marstest_db-data'],
                            projects=[{'Name': 'marstest', 'Status': 'exited(2)', 'ConfigFiles': ','.join(owned)}])
@@ -761,6 +763,139 @@ class CheckAndUp(Base):
             self.assertEqual(rc, 1)
             self.assertIn('cannot stat the secret files', out)
             self.assertNotIn('Traceback', out + err)
+
+
+class PoolAndCanvasSiteWiring(unittest.TestCase):
+    """validate_site / Install.config_files / Install.compose_args / verify_rendered
+    for the opt-in warm pool and Canvas pilot build site keys, as pure functions -
+    no real Docker/Compose or MARS_STOCK_COMPOSE needed (CheckAndUp above covers
+    the same site keys through a real merge, gated on those)."""
+
+    BASE_SITE: ClassVar[dict[str, str]] = {
+        'APP_ORIGIN': APP, 'RUNTIME_ORIGIN': RUN, 'DO_MARS_CONFIG_ID': CFG,
+        'APP_PORT': '9043', 'MARS_GATEWAY_HOST_PORT': '8100',
+    }
+
+    def site(self, **overrides):
+        d = dict(self.BASE_SITE)
+        d.update(overrides)
+        return d
+
+    def install(self):
+        return ms.Install(str(Path(tempfile.mkdtemp(prefix='mars-pool-canvas-')) / 'install'))
+
+    # --- validate_site: pool ---
+
+    def test_pool_disabled_by_default_needs_no_extra_keys(self):
+        ms.validate_site(self.site(), 'mars')
+
+    def test_pool_enabled_requires_spec_id(self):
+        with self.assertRaises(ms.SetupError) as ctx:
+            ms.validate_site(self.site(DO_MARS_POOL_ENABLED='true'), 'mars')
+        self.assertIn('DO_MARS_POOL_SANDBOX_SPEC_ID', str(ctx.exception))
+
+    def test_pool_enabled_rejects_max_below_floor(self):
+        with self.assertRaises(ms.SetupError) as ctx:
+            ms.validate_site(self.site(
+                DO_MARS_POOL_ENABLED='true', DO_MARS_POOL_SANDBOX_SPEC_ID='spec-1',
+                DO_MARS_POOL_MIN_HOT='3', DO_MARS_POOL_MIN_PAUSED_RESERVE='2',
+                DO_MARS_POOL_MAX_TOTAL='4',
+            ), 'mars')
+        self.assertIn('DO_MARS_POOL_MAX_TOTAL', str(ctx.exception))
+
+    def test_pool_enabled_accepts_consistent_sizing(self):
+        ms.validate_site(self.site(
+            DO_MARS_POOL_ENABLED='true', DO_MARS_POOL_SANDBOX_SPEC_ID='spec-1',
+            DO_MARS_POOL_MIN_HOT='3', DO_MARS_POOL_MIN_PAUSED_RESERVE='2',
+            DO_MARS_POOL_MAX_TOTAL='5',
+        ), 'mars')
+
+    def test_pool_enabled_must_be_true_or_false(self):
+        with self.assertRaises(ms.SetupError):
+            ms.validate_site(self.site(DO_MARS_POOL_ENABLED='yes'), 'mars')
+
+    def test_pool_numeric_fields_must_be_non_negative_integers(self):
+        for key in ('DO_MARS_POOL_MIN_HOT', 'DO_MARS_POOL_MIN_PAUSED_RESERVE',
+                    'DO_MARS_POOL_MAX_TOTAL', 'DO_MARS_POOL_RECONCILE_INTERVAL_SECONDS'):
+            with self.assertRaises(ms.SetupError, msg=key):
+                ms.validate_site(self.site(DO_MARS_POOL_ENABLED='true',
+                                            DO_MARS_POOL_SANDBOX_SPEC_ID='spec-1',
+                                            **{key: '-1'}), 'mars')
+            with self.assertRaises(ms.SetupError, msg=key):
+                ms.validate_site(self.site(DO_MARS_POOL_ENABLED='true',
+                                            DO_MARS_POOL_SANDBOX_SPEC_ID='spec-1',
+                                            **{key: 'abc'}), 'mars')
+
+    def test_pool_settings_validated_regardless_of_stage(self):
+        # site.env is shared across both stages; an incomplete pool config
+        # (enabled with no spec id) must not pass unnoticed just because the
+        # operator happens to run --stage baseline first.
+        with self.assertRaises(ms.SetupError):
+            ms.validate_site(self.site(DO_MARS_POOL_ENABLED='true'), 'baseline')
+
+    # --- validate_site: canvas pilot build ---
+
+    def test_canvas_build_dir_must_be_absolute(self):
+        with self.assertRaises(ms.SetupError) as ctx:
+            ms.validate_site(self.site(CANVAS_PILOT_BUILD='relative/path'), 'mars')
+        self.assertIn('absolute', str(ctx.exception))
+
+    def test_canvas_build_dir_must_exist_and_be_a_directory(self):
+        with self.assertRaises(ms.SetupError):
+            ms.validate_site(self.site(CANVAS_PILOT_BUILD='/nonexistent/mars-pilot-xyz'), 'mars')
+        with tempfile.NamedTemporaryFile() as f, self.assertRaises(ms.SetupError):
+            ms.validate_site(self.site(CANVAS_PILOT_BUILD=f.name), 'mars')
+
+    def test_canvas_build_dir_needs_readable_index_html(self):
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaises(ms.SetupError) as ctx:
+                ms.validate_site(self.site(CANVAS_PILOT_BUILD=d), 'mars')
+            self.assertIn('index.html', str(ctx.exception))
+            (Path(d) / 'index.html').write_text('<html></html>')
+            ms.validate_site(self.site(CANVAS_PILOT_BUILD=d), 'mars')
+
+    def test_canvas_build_dir_validated_regardless_of_stage(self):
+        with self.assertRaises(ms.SetupError):
+            ms.validate_site(self.site(CANVAS_PILOT_BUILD='relative/path'), 'baseline')
+
+    # --- Install.config_files / compose_args: canvas overlay ---
+
+    def test_config_files_omit_canvas_overlay_by_default(self):
+        names = [f.name for f in self.install().config_files('mars', self.site())]
+        self.assertNotIn('docker-compose.canvas-pilot.yml', names)
+
+    def test_config_files_include_canvas_overlay_last_when_set(self):
+        with tempfile.TemporaryDirectory() as d:
+            names = [f.name for f in self.install().config_files(
+                'mars', self.site(CANVAS_PILOT_BUILD=d))]
+            self.assertIn('docker-compose.canvas-pilot.yml', names)
+            self.assertEqual(names[-1], 'docker-compose.canvas-pilot.yml')
+
+    def test_config_files_never_add_canvas_overlay_for_baseline(self):
+        names = [f.name for f in self.install().config_files(
+            'baseline', self.site(CANVAS_PILOT_BUILD='/some/path'))]
+        self.assertNotIn('docker-compose.canvas-pilot.yml', names)
+
+    def test_owned_config_files_includes_canvas_overlay_path(self):
+        inst = self.install()
+        self.assertIn(str(inst.canvas_overlay), inst.owned_config_files())
+
+    # --- Install.compose_args: pool Compose profile ---
+
+    def test_compose_args_omit_pool_profile_by_default(self):
+        args = self.install().compose_args({'project': 'p'}, 'mars', self.site())
+        self.assertNotIn('--profile', args)
+
+    def test_compose_args_add_pool_profile_when_enabled(self):
+        args = self.install().compose_args(
+            {'project': 'p'}, 'mars', self.site(DO_MARS_POOL_ENABLED='true'))
+        self.assertIn('--profile', args)
+        self.assertEqual(args[args.index('--profile') + 1], 'pool')
+
+    def test_compose_args_never_add_pool_profile_for_baseline(self):
+        args = self.install().compose_args(
+            {'project': 'p'}, 'baseline', self.site(DO_MARS_POOL_ENABLED='true'))
+        self.assertNotIn('--profile', args)
 
 
 if __name__ == '__main__':

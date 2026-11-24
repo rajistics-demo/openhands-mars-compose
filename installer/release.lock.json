@@ -11,7 +11,7 @@
     },
     "base_image": "ghcr.io/openhands/enterprise-server:1.88.0@sha256:cc67d10163e9e466b65d7a6e765a020fcc23ca036e78c6a6d846c458d1e2d9eb",
     "migration_base": "213",
-    "migration_package": "do_mars_001"
+    "migration_package": "do_mars_002"
   },
   "automation": {
     "version": "1.30.0",

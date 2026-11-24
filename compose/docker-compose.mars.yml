@@ -28,6 +28,7 @@ x-mars-env: &mars-env
   DO_MARS_CONFIG_ID: ${DO_MARS_CONFIG_ID:?set DO_MARS_CONFIG_ID}
   DO_MARS_GATEWAY_URL: ${DO_MARS_GATEWAY_URL:?set DO_MARS_GATEWAY_URL}
   DO_MARS_CALLBACK_URL: ${DO_MARS_CALLBACK_URL:?set DO_MARS_CALLBACK_URL}
+  DO_MARS_ENABLE_BROWSER_PREVIEW: ${DO_MARS_ENABLE_BROWSER_PREVIEW:-false}
   DO_MARS_SESSION_TTL_SECONDS: ${DO_MARS_SESSION_TTL_SECONDS:-28800}
   DO_MARS_TEAM_TOKEN_FILE: /run/secrets/mars_team_token
   DO_MARS_SESSION_SIGNING_KEY_FILE: /run/secrets/mars_session_signing_key
@@ -37,6 +38,21 @@ x-mars-env: &mars-env
   DO_MARS_INTERNAL_URL: ${DO_MARS_INTERNAL_URL:-http://mars-gateway:8100}
   OH_SANDBOX_MAX_NUM_SANDBOXES: ${MARS_MAX_SANDBOXES:-10}
   OH_SANDBOX_LIFECYCLE_IDLE_SECONDS: ${OH_SANDBOX_LIFECYCLE_IDLE_SECONDS:-1800}
+  # Opt-in warm pool (do_mars_pool_config.py): DoMarsSandboxServiceInjector
+  # reads these at construction time to decide whether start_sandbox tries
+  # claim_one before falling back to its normal create path. Disabled
+  # unless DO_MARS_POOL_ENABLED=true, same as the mars-pool-reconciler
+  # service below - this does not itself start or require that service.
+  # Timing/sizing knobs beyond min_hot/min_paused_reserve/max_total are the
+  # reconciler's own concern and are not read here.
+  # No separate DO_MARS_POOL_CONFIG_ID: claim_one is keyed on spec.config_id,
+  # i.e. the same DO_MARS_CONFIG_ID set above - never an independent pool
+  # label that could drift from the provider config actually in use.
+  DO_MARS_POOL_ENABLED: ${DO_MARS_POOL_ENABLED:-false}
+  DO_MARS_POOL_SANDBOX_SPEC_ID: ${DO_MARS_POOL_SANDBOX_SPEC_ID:-}
+  DO_MARS_POOL_MIN_HOT: ${DO_MARS_POOL_MIN_HOT:-0}
+  DO_MARS_POOL_MIN_PAUSED_RESERVE: ${DO_MARS_POOL_MIN_PAUSED_RESERVE:-0}
+  DO_MARS_POOL_MAX_TOTAL: ${DO_MARS_POOL_MAX_TOTAL:-0}
 
 services:
   app:
@@ -97,6 +113,7 @@ services:
       # see docs/INSTALL.md "Gateway database role".
       DB_USER: ${MARS_GATEWAY_DB_USER:-${DB_USER:-openhands}}
       DB_PASS: ${MARS_GATEWAY_DB_PASS:-${DB_PASS:-openhands}}
+      DO_MARS_ENABLE_BROWSER_PREVIEW: ${DO_MARS_ENABLE_BROWSER_PREVIEW:-false}
       DO_MARS_APP_ORIGIN: ${DO_MARS_APP_ORIGIN:?set DO_MARS_APP_ORIGIN}
       DO_MARS_TEAM_TOKEN_FILE: /run/secrets/mars_team_token
       DO_MARS_SESSION_SIGNING_KEY_FILE: /run/secrets/mars_session_signing_key
@@ -114,6 +131,45 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
+    restart: unless-stopped
+
+  # Opt-in warm-pool reconciler: a separate process from app/worker (see
+  # do_mars_pool_worker.py's module docstring for why), run under the
+  # "pool" Compose profile so it only starts when an operator explicitly
+  # asks for it with `--profile pool`. DO_MARS_POOL_ENABLED still defaults
+  # to false even if this profile is activated by mistake - the worker
+  # itself exits immediately in that case (see do_mars_pool_worker.main).
+  mars-pool-reconciler:
+    image: ${MARS_APP_IMAGE:?build docker/enterprise.Dockerfile and set MARS_APP_IMAGE}
+    profiles: ['pool']
+    command: ['python', '-m', 'openhands.app_server.sandbox.do_mars_pool_worker']
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      # Bring-your-own managed PostgreSQL: override DB_HOST/DB_PORT (and
+      # DB_NAME/DB_USER/DB_PASS below) in mars.env if your Enterprise
+      # database is not the bundled `db` service - see mars.env.example.
+      # Must be a session-pinned connection (do_mars_pool_config.py).
+      DB_HOST: ${DB_HOST:-db}
+      DB_PORT: ${DB_PORT:-5432}
+      DB_NAME: ${DB_NAME:-openhands}
+      DB_USER: ${DB_USER:-openhands}
+      DB_PASS: ${DB_PASS:-openhands}
+      DO_MARS_TEAM_TOKEN_FILE: /run/secrets/mars_team_token
+      # DO_MARS_CONFIG_ID (not a separate pool-only id): do_mars_pool_worker.py
+      # requires this directly, same provider config every non-pool
+      # create_session call uses - see the DO_MARS_POOL_ENABLED comment in
+      # mars.env.example for why there is no independent pool config id.
+      DO_MARS_CONFIG_ID: ${DO_MARS_CONFIG_ID:?set DO_MARS_CONFIG_ID}
+      DO_MARS_POOL_ENABLED: ${DO_MARS_POOL_ENABLED:-false}
+      DO_MARS_POOL_SANDBOX_SPEC_ID: ${DO_MARS_POOL_SANDBOX_SPEC_ID:-}
+      DO_MARS_POOL_MIN_HOT: ${DO_MARS_POOL_MIN_HOT:-0}
+      DO_MARS_POOL_MIN_PAUSED_RESERVE: ${DO_MARS_POOL_MIN_PAUSED_RESERVE:-0}
+      DO_MARS_POOL_MAX_TOTAL: ${DO_MARS_POOL_MAX_TOTAL:-0}
+      DO_MARS_POOL_RECONCILE_INTERVAL_SECONDS: ${DO_MARS_POOL_RECONCILE_INTERVAL_SECONDS:-30}
+    secrets:
+      - mars_team_token
     restart: unless-stopped
 
 secrets:

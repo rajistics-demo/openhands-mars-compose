@@ -9,6 +9,8 @@ The evaluated integration passed **1, 5 and 10 concurrent native jobs**, includi
 ## What the integration does
 
 - Enterprise creates, identifies, pauses, resumes and deletes MARS sandboxes through its existing Sandbox V1 interfaces.
+- The opt-in [warm pool](docs/INSTALL.md#warm-pool) keeps a bounded inventory of hot and paused MARS VMs for one Sandbox Spec.
+- The opt-in [Canvas pilot](docs/CANVAS.md) adds Pause to eligible MARS conversations and supports an authenticated live preview when users reopen the same conversation.
 - The runtime gateway carries HTTP and WebSocket traffic to Agent Server inside the VM through DO's authenticated port-forward. The VM has no public inbound service URL.
 - The VM calls back to Enterprise over HTTPS. Automation keeps run status and completion outcomes in its database, so the native history survives VM cleanup.
 - Docker Compose hosts the control plane. MARS provides the job's CPU, memory and workspace. An existing LLM gateway/provider remains a separate part of your model configuration. Allow its resolved hostname through MARS egress using `MARS_LLM_EGRESS_HOSTS`; see the installation guide.

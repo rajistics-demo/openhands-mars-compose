@@ -1,0 +1,10 @@
+--- a/openhands/app_server/app_conversation/app_conversation_models.py
++++ b/openhands/app_server/app_conversation/app_conversation_models.py
+@@ -303,6 +303,7 @@
+ 
+ 
+ class AppConversation(AppConversationInfo):  # type: ignore
++    sandbox_supports_runtime_pause: bool = Field(default=False)
+     sandbox_status: SandboxStatus = Field(
+         default=SandboxStatus.MISSING,
+         description='Current sandbox status. Will be MISSING if the sandbox does not exist.',

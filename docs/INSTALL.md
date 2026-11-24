@@ -108,7 +108,7 @@ sudo chmod 0640 "$MARS_INSTALL_DIR/secrets/do_team_token" \
 
 App and worker use the stock root entrypoint and read the bootstrap file. The DO token and signing key stay on the control plane. The bootstrap value is shared with the MARS environment initialization path by design. Do not store credentials in guest workspace artifacts.
 
-The initial evaluation gateway uses the existing application database role so first activation does not depend on a role whose table grants cannot exist before migration. For a column-read-only gateway role, follow the [manual role setup](INSTALL_MANUAL.md#4-gateway-database-role-recommended) **after** `do_mars_001` is applied, then set `MARS_GATEWAY_DB_USER` / `MARS_GATEWAY_DB_PASS` in `private/stack.env` and rerun checks. That least-privilege follow-up is not performed automatically.
+The initial evaluation gateway uses the existing application database role so first activation does not depend on a role whose table grants cannot exist before migration. For a column-read-only gateway role, follow the [manual role setup](INSTALL_MANUAL.md#4-gateway-database-role-recommended) **after** `do_mars_001` is applied (the columns it needs; a fully-started install has moved on to `do_mars_002`, which is also supported), then set `MARS_GATEWAY_DB_USER` / `MARS_GATEWAY_DB_PASS` in `private/stack.env` and rerun checks. That least-privilege follow-up is not performed automatically.
 
 ## 5. Build and activate MARS
 
@@ -122,11 +122,134 @@ python3 installer/mars_setup.py status --dir "$MARS_INSTALL_DIR"
 
 The two flags are your explicit confirmation that you completed the stock conversation and took the database backups. The installer cannot make that claim on your behalf. It refuses an unsupported migration revision rather than stamping, downgrading or rebasing the database.
 
-The build starts from the digest-pinned official Enterprise/Automation images and applies the hash-checked patches. Images remain local; no registry push occurs. Activation adds `mars-gateway`, switches app/worker/Automation to those local images and applies the additive Enterprise migration `213 → do_mars_001` through normal application startup.
+The build starts from the digest-pinned official Enterprise/Automation images and applies the hash-checked patches. Images remain local; no registry push occurs. Activation adds `mars-gateway`, switches app/worker/Automation to those local images and applies the additive Enterprise migrations `213 → do_mars_001 → do_mars_002` through normal application startup.
 
-Configure the runtime TLS origin to forward to `127.0.0.1:8100` (or your chosen gateway port). Disable query-string access logging there because supported WebSocket clients may carry session authentication in the query. Wait for the application, Automation service and gateway to become healthy, and verify `alembic_version` is `do_mars_001`.
+Configure the runtime TLS origin to forward to `127.0.0.1:8100` (or your chosen gateway port). Disable query-string access logging there because supported WebSocket clients may carry session authentication in the query. Wait for the application, Automation service and gateway to become healthy, and verify `alembic_version` is `do_mars_002`.
 
-Do not use `up --baseline` as a rollback after MARS activation. Stock 1.88.0 cannot start against a database stamped `do_mars_001`; follow [ROLLBACK.md](ROLLBACK.md) using the MARS image and your backups.
+### Enable Canvas previews
+
+Use an HTTPS application hostname and route `*.preview.<app-hostname>` to the
+same MARS gateway as the runtime origin. Preserve the incoming Host header.
+Cover each preview hostname with trusted TLS. For a shared installation,
+provision a wildcard certificate and route once; for a disposable test, the
+TLS edge may instead serve a single explicitly named sandbox host. See
+[`compose/Caddyfile.example`](../compose/Caddyfile.example) for both as a
+concrete, operator-editable starting point - comment out whichever you are
+not using.
+
+Set `DO_MARS_ENABLE_BROWSER_PREVIEW=true` in `site.env` and activate the MARS
+stack. The gateway gives each sandbox its own preview origin and maps it only
+to WORKER_1 on port 8011; the app and preview hosts must share the same
+browser site so the Secure, host-only preview cookie can be set and sent.
+Startup history and chat continue over the existing Enterprise and Agent
+Server APIs regardless of whether the Pause/preview pilot below is installed.
+
+The **Pause control and embedded live preview** in Canvas itself are a
+separate, opt-in pilot build on top of stock Canvas 1.35.0: a reproducible
+build recipe, the tested source patch, and the
+[`compose/docker-compose.canvas-pilot.yml`](../compose/docker-compose.canvas-pilot.yml)
+overlay that swaps in the built bundle without replacing the `canvas-server`
+image are in [CANVAS.md](CANVAS.md). Skip it if you only need previews
+reachable by URL and do not need the in-app button/iframe.
+
+Do not use `up --baseline` as a rollback after MARS activation. Stock 1.88.0 cannot start against a database stamped `do_mars_001` or `do_mars_002`; follow [ROLLBACK.md](ROLLBACK.md) using the MARS image and your backups.
+
+### Warm pool
+
+Opt-in, disabled by default. Pre-creates a small inventory of MARS sandboxes
+(a configurable hot minimum plus a paused reserve) for one Enterprise sandbox
+spec, so `start_sandbox` can claim an already-booted VM instead of always
+creating a fresh one. See `do_mars_pool_config.py` for every
+`DO_MARS_POOL_*` setting and its validation rules, and `mars.env.example`
+for the defaults.
+
+To enable it through the standard `mars_setup.py check`/`up` flow:
+
+1. Set `DO_MARS_POOL_ENABLED=true`, `DO_MARS_POOL_SANDBOX_SPEC_ID` (the one
+   spec pool inventory is scoped to) and your target `DO_MARS_POOL_MIN_HOT`
+   / `DO_MARS_POOL_MIN_PAUSED_RESERVE` / `DO_MARS_POOL_MAX_TOTAL` in
+   `site.env`, alongside your other settings (see `mars.env.example` for
+   every key and its default).
+2. Run `check --stage mars`, then `up --mars` as usual. `validate_site`
+   rejects an inconsistent combination (enabled with no spec ID, or
+   `MAX_TOTAL` below `MIN_HOT + MIN_PAUSED_RESERVE`) before Compose is ever
+   invoked; `up` then passes `--profile pool` for you so
+   `mars-pool-reconciler` starts alongside the rest of the stack -
+   there is nothing further to run by hand. Leave `DO_MARS_POOL_ENABLED`
+   unset (or `false`) in `site.env` and the profile is never activated, so
+   no extra container is ever created: this matches the reconciler's own
+   `profiles: ['pool']` guard in `docker-compose.mars.yml`.
+3. `check`'s rendered-config assertions (`verify_rendered` in
+   `mars_setup.py`) confirm the pool settings actually reached `app`,
+   `worker` and `mars-pool-reconciler` identically - not just that
+   `site.env` parsed - including that `mars-pool-reconciler` is present
+   (only) when enabled.
+
+Setting these keys in a separate `mars.env` file and running a manual
+`docker compose -f docker-compose.yml -f docker-compose.mars.yml --env-file
+mars.env --profile pool up -d` still works exactly as before, outside
+`site.env`/`check` entirely, for operators who do not want the pool tracked
+by the installer; see `mars.env.example`'s comments for that path. Note
+that `--profile pool` is required on that manual invocation - omitting it
+leaves `DO_MARS_POOL_ENABLED` inert even if set, since no process is
+ticking the pool's state machine.
+
+There is no separate "pool config id" to set. Every pool slot is created
+under, and can only ever be claimed under, the same `DO_MARS_CONFIG_ID` you
+already set above: the reconciler reads it directly, and the claim query
+inside `start_sandbox` is keyed on the resolved spec's `config_id` - the
+exact value the non-pool create path already passes to the provider.
+
+**Rotating `DO_MARS_CONFIG_ID` does not auto-reap the old config's slots.**
+Every reconciler step - the unhealthy/stale-age sweep included - is scoped
+to one `(backend, sandbox_spec_id, config_id)` triple
+(`do_mars_pool_reconciler.py`). A reconciler started with the *new*
+`DO_MARS_CONFIG_ID` never queries, and therefore never sees or destroys,
+slots created under the *old* one: they stop being claimable (the claim
+query is keyed on the current `config_id`) but sit as orphaned, still-paying
+VMs until an operator deals with them. Drain the old config **before**
+rotating:
+
+1. With `DO_MARS_POOL_ENABLED=true` still set to the *old* `DO_MARS_CONFIG_ID`,
+   set `DO_MARS_POOL_MIN_HOT=0`, `DO_MARS_POOL_MIN_PAUSED_RESERVE=0` and
+   `DO_MARS_POOL_MAX_TOTAL=0`, then apply it (`check --stage mars` / `up
+   --mars`, or restart `mars-pool-reconciler` on the manual route).
+2. Wait for the reconciler to shed inventory down to zero: with every floor
+   and `max_total` at 0, its normal over-`max_total` step
+   (`_shed_excess`) deletes the old config's unclaimed hot/paused slots on
+   its usual tick interval - this never touches a slot a conversation has
+   already claimed, only idle pool inventory. Confirm zero rows for that
+   `config_id` before continuing (see `do_mars_pool_store.py` for the
+   inventory query, or watch the reconciler's own tick logs).
+3. Only then set `DO_MARS_CONFIG_ID` to the new value. The new reconciler
+   instance starts a pool from zero under it; nothing from the old config
+   carries over, by design.
+
+**Stopping the reconciler needs an explicit stop, not just a flag flip.**
+Setting `DO_MARS_POOL_ENABLED=false` (or just omitting `--profile pool`)
+only affects a *future* `up`; Compose profiles gate what a new `up`/`create`
+starts; they do nothing to a `mars-pool-reconciler` container that is
+already running from an earlier `--profile pool up`. To actually stop it -
+for example, before disabling the pool for good - run
+`docker compose ... stop mars-pool-reconciler` (or `up` again without
+`--profile pool` plus `--remove-orphans`) yourself; the installer does not
+infer "disabled" from `site.env` into "stop the running container" for you.
+
+**Bring-your-own managed PostgreSQL for the reconciler.** The
+`mars-pool-reconciler` service is new (added by this package, not part of
+the stock Enterprise compose file) and connects to Postgres with its own
+`DB_HOST`/`DB_PORT`/`DB_NAME`/`DB_USER`/`DB_PASS`, independent of however
+app/worker are wired to their database. The defaults (`DB_HOST=db`,
+`DB_PORT=5432`) only work for the bundled `db` Compose service. If your
+Enterprise database is a managed instance instead - under the existing
+Enterprise DB contract - override these in `mars.env` to point at it, and
+confirm the connection is session-pinned: a direct connection, or a pooler
+in *session* pool mode, never *transaction* or *statement* mode. The pool's
+`claim_one`/`promote_claim_to_sandbox`/advisory-lock safety guarantees all
+depend on one statement's lock and a later statement's commit or unlock
+landing on the *same* backend session; a statement- or transaction-pooling
+proxy can silently break that without ever raising an error. See
+`do_mars_pool_config.py`'s module docstring for the full explanation.
 
 ### Check an interactive conversation on MARS
 

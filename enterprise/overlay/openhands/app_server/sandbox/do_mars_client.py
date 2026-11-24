@@ -184,8 +184,8 @@ class DoMarsClient:
     def port_forward_url(session_id: str, port: int) -> str:
         """The WS URL the gateway dials for raw-TCP port forwarding."""
         validate_session_id(session_id)
-        if port != 8000:
-            raise ValueError('Only the Agent Server port is supported')
+        if port not in (8000, 8011):
+            raise ValueError('Only Agent Server and worker preview ports are supported')
         return (
             f'{DO_API_ORIGIN.replace("https://", "wss://", 1)}'
             f'/v2/agents/sessions/{session_id}/port-forward/{port}'

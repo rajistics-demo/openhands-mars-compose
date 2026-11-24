@@ -14,6 +14,6 @@ RUN python3 /tmp/mars/mars_apply.py /tmp/mars/enterprise /app \
  && rm -rf /tmp/mars
 
 LABEL org.openhands.mars.package-base="enterprise-server:1.88.0" \
-      org.openhands.mars.migration-head="do_mars_001"
+      org.openhands.mars.migration-head="do_mars_002"
 # The same image runs the app (stock CMD) and, with a different command, the
 # runtime gateway; see compose/docker-compose.mars.yml.

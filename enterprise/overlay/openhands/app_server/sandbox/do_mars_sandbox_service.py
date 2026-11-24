@@ -19,7 +19,7 @@ import logging
 import os
 import secrets
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, AsyncGenerator, ClassVar
 from urllib.parse import urlsplit
 
@@ -44,6 +44,17 @@ from openhands.app_server.sandbox.do_mars_credentials import (
 from openhands.app_server.sandbox.do_mars_diagnostics import (
     error_class,
     log_diagnostic,
+)
+from openhands.app_server.sandbox.do_mars_pool_config import DoMarsPoolConfig
+from openhands.app_server.sandbox.do_mars_pool_models import PoolSlotState
+from openhands.app_server.sandbox.do_mars_pool_store import (
+    claim_one,
+    promote_claim_to_sandbox,
+)
+from openhands.app_server.sandbox.do_mars_preview import (
+    PREVIEW_PORT,
+    preview_domain,
+    preview_origin,
 )
 from openhands.app_server.sandbox.do_mars_secrets import read_secret
 from openhands.app_server.sandbox.do_mars_spec_service import DoMarsSpecInfo
@@ -121,15 +132,31 @@ class DoMarsSandboxService(ManagedSandboxService):
     startup_timeout_seconds: int = 300
     web_url: str | None = None
     internal_url: str | None = None
+    preview_domain: str | None = None
+    # Opt-in warm pool (see do_mars_pool_config.py). None/disabled leaves
+    # start_sandbox's create path byte-for-byte what it was before this
+    # field existed: the pool-claim branch below never runs unless an
+    # operator both constructs this with a config AND sets
+    # ``DO_MARS_POOL_ENABLED=true`` for this exact spec.
+    pool_config: DoMarsPoolConfig | None = None
 
     def exposed_urls(self, row: StoredSandbox) -> list[ExposedUrl]:
-        return [
+        urls = [
             ExposedUrl(
                 name=AGENT_SERVER,
                 port=8000,
                 url=f'{self.gateway_base_url.rstrip("/")}/{row.id}/8000',
             )
         ]
+        if self.preview_domain:
+            urls.append(
+                ExposedUrl(
+                    name=WORKER_1,
+                    port=PREVIEW_PORT,
+                    url=preview_origin(self.preview_domain, row.id) + '/',
+                )
+            )
+        return urls
 
     async def _get_session(self, row: StoredSandbox) -> DoMarsSession | None:
         """The DO session for a row, or None when there is none to read yet.
@@ -167,6 +194,7 @@ class DoMarsSandboxService(ManagedSandboxService):
                 if status == SandboxStatus.MISSING:
                     status_detail = 'DigitalOcean MARS session is gone or terminated'
         return SandboxInfo(
+            supports_runtime_pause=True,
             id=row.id,
             created_by_user_id=row.created_by_user_id,
             credential_org_id=row.credential_org_id,
@@ -340,6 +368,22 @@ class DoMarsSandboxService(ManagedSandboxService):
             )
         await self.pause_old_sandboxes(self.max_num_sandboxes - 1)
 
+        if (
+            self.pool_config
+            and self.pool_config.enabled
+            and self.pool_config.sandbox_spec_id == spec.id
+        ):
+            claimed = await self._start_sandbox_from_pool(
+                spec, sandbox_id, started_by, extra_env, user, org
+            )
+            if claimed is not None:
+                return claimed
+            # No eligible HOT_READY slot (empty, cold, or only paused
+            # inventory the service does not resume inline - see
+            # claim_one's ``states`` docstring): fall through to the exact
+            # unmodified create path below, same as if the pool were
+            # disabled.
+
         sid = sandbox_id or secrets.token_hex(16)
         name = f'oh-{sid}'
         key = secrets.token_urlsafe(32)
@@ -390,6 +434,113 @@ class DoMarsSandboxService(ManagedSandboxService):
             # caller/lifecycle to delete-retry rather than removed here,
             # because an unconfirmed delete must never silently drop a live
             # sandbox from history.
+            if row.provider_resource_id:
+                try:
+                    await asyncio.shield(
+                        self.do.delete_session(row.provider_resource_id)
+                    )
+                except Exception as cleanup_exc:
+                    log_diagnostic(
+                        'do_mars.cleanup_after_init_failure_failed',
+                        level=logging.ERROR,
+                        operation='session.delete',
+                        error_class=error_class(cleanup_exc),
+                    )
+            raise
+        return await self.as_info(row)
+
+    async def _start_sandbox_from_pool(
+        self,
+        spec: DoMarsSpecInfo,
+        sandbox_id: str | None,
+        started_by: SandboxStartedBy,
+        extra_env: dict[str, str] | None,
+        user: str,
+        org: str | None,
+    ) -> SandboxInfo | None:
+        """Claim a pre-created HOT_READY slot instead of a fresh DO create.
+
+        Returns ``None`` only for "no eligible slot was claimed" - the one
+        case where ``start_sandbox`` may still fall through to its normal
+        create path. ``claim_one`` either claims a slot and commits that
+        claim, or claims nothing and rolls back (do_mars_pool_store.py); it
+        never leaves a half-claimed row for this method to reason about.
+        Once ``promote_claim_to_sandbox`` below commits, this VM is a real,
+        owned ``StoredSandbox`` row like any other, so every failure past
+        that point is raised (never swallowed into a ``None`` return) and
+        goes through the exact same shielded delete-and-reraise cleanup
+        ``start_sandbox``'s own create path uses - this is deliberately not
+        a second, divergent cleanup implementation.
+
+        HOT_READY only (``states=(PoolSlotState.HOT_READY,)``): this method
+        never resumes a paused VM inline, so it never waits on a resume
+        inside a tenant-facing create call. Rebalancing paused inventory
+        up to hot is entirely the reconciler's job, on its own schedule.
+        """
+
+        sid = sandbox_id or secrets.token_hex(16)
+        slot = await claim_one(
+            self.db_session,
+            backend=DO_MARS_BACKEND,
+            sandbox_spec_id=spec.id,
+            # The *provider's* config id for this exact spec, never a
+            # separately-settable pool label: a pool slot's config_id is
+            # the DO environment config it was actually created under, so
+            # keying the claim query on spec.config_id (the same value
+            # start_sandbox's own create path passes to do.create_session
+            # a few lines up) means a slot created under a config that has
+            # since been rotated out of this spec is never claimable -
+            # the row simply stops matching, with no extra validation
+            # needed. A previous revision used an independent
+            # ``DO_MARS_POOL_CONFIG_ID`` label defaulting to the literal
+            # string "default", which could silently diverge from the
+            # provider's real config id and let a stale-config VM be
+            # claimed for a spec now pointing at a different config.
+            config_id=spec.config_id,
+            claim_owner_sandbox_id=sid,
+            claimed_by_user_id=user,
+            claimed_org_id=org,
+            min_health_check_after=utc_now()
+            - timedelta(seconds=self.pool_config.health_freshness_seconds),
+            states=(PoolSlotState.HOT_READY,),
+        )
+        if slot is None:
+            return None
+
+        key = secrets.token_urlsafe(32)
+        row = self._new_stored_sandbox(
+            id=sid,
+            created_by_user_id=user,
+            credential_org_id=org,
+            started_by=started_by.value,
+            sandbox_spec_id=spec.id,
+            session_api_key=SecretStr(key),
+            session_api_key_hash=hash_session_api_key(key),
+            provider_create_intent_at=None,
+            provider_resource_id=slot.provider_resource_id,
+        )
+
+        async def _create_row(db_session: Any) -> None:
+            db_session.add(row)
+
+        await promote_claim_to_sandbox(
+            self.db_session,
+            slot_id=slot.id,
+            claim_owner_sandbox_id=sid,
+            create_sandbox_row=_create_row,
+        )
+
+        # From here on this is an owned sandbox like any other: a failure
+        # must be raised, not swallowed, and cleaned up the same way.
+        try:
+            key = issue_session_key(row.id, slot.provider_resource_id)
+            row.session_api_key = SecretStr(key)
+            row.session_api_key_hash = hash_session_api_key(key)
+            await self.db_session.commit()
+
+            session = await self.wait_ready(slot.provider_resource_id)
+            await self._init_agent_server(row, session, spec, extra_env)
+        except BaseException:
             if row.provider_resource_id:
                 try:
                     await asyncio.shield(
@@ -677,6 +828,10 @@ class DoMarsSandboxServiceInjector(ManagedSandboxServiceInjector):
     callback_url: str | None = Field(
         default_factory=lambda: os.getenv('DO_MARS_CALLBACK_URL')
     )
+    # Disabled unless every DO_MARS_POOL_* setting opts in (see
+    # do_mars_pool_config.py); DoMarsPoolConfig.from_env() never raises for
+    # the all-unset/disabled case, only once DO_MARS_POOL_ENABLED=true.
+    pool_config: DoMarsPoolConfig = Field(default_factory=DoMarsPoolConfig.from_env)
 
     async def inject(
         self, state: InjectorState, request: Request | None = None
@@ -708,5 +863,7 @@ class DoMarsSandboxServiceInjector(ManagedSandboxServiceInjector):
                 max_num_sandboxes=self.max_num_sandboxes,
                 startup_timeout_seconds=self.startup_timeout_seconds,
                 internal_url=self.internal_url,
+                preview_domain=preview_domain(get_global_config().web_url or ''),
                 lifecycle=self.lifecycle,
+                pool_config=self.pool_config,
             )

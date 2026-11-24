@@ -1,4 +1,4 @@
-# Host-installed Caddy example. Replace both placeholder hostnames.
+# Host-installed Caddy example. Replace every placeholder hostname.
 # These ports are host loopback bindings; do not publish the raw services.
 # Set the stock stack's WEB_HOST / WEB_URL and Canvas cloud origin to the
 # public app origin, as described in the official Compose HTTPS guide.
@@ -10,3 +10,23 @@ app.example.invalid {
 runtime.example.invalid {
     reverse_proxy 127.0.0.1:8100
 }
+
+# Canvas live preview (see "Enable Canvas previews" in docs/INSTALL.md and
+# docs/CANVAS.md). Required only with DO_MARS_ENABLE_BROWSER_PREVIEW=true.
+# The gateway reads the incoming Host header to pick the sandbox, so every
+# preview vhost below must forward it unchanged and point at the SAME
+# gateway upstream as runtime.example.invalid. Pick ONE of the next two
+# blocks; do not run both for the same app hostname.
+
+# Option A - shared installation: a wildcard certificate covering every
+# sandbox under one app hostname, no further Caddy edits per sandbox.
+*.preview.app.example.invalid {
+    reverse_proxy 127.0.0.1:8100
+}
+
+# Option B - disposable test, one sandbox at a time: comment out option A
+# above and name the single sandbox host instead (replace SANDBOX_ID with
+# the sandbox's actual id; get a normal, non-wildcard certificate for it).
+# SANDBOX_ID.preview.app.example.invalid {
+#     reverse_proxy 127.0.0.1:8100
+# }

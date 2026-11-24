@@ -18,11 +18,15 @@ from openhands.agent_server.utils import utc_now
 from openhands.app_server.errors import SandboxDeleteRetryError, SandboxError
 from openhands.app_server.sandbox.do_mars_client import DO_MARS_BACKEND, DoMarsSession
 from openhands.app_server.sandbox.do_mars_credentials import issue_session_key
+from openhands.app_server.sandbox.do_mars_pool_config import DoMarsPoolConfig
 from openhands.app_server.sandbox.do_mars_proxy import _safe_path
 from openhands.app_server.sandbox.do_mars_sandbox_service import DoMarsSandboxService
 from openhands.app_server.sandbox.do_mars_spec_service import DoMarsSpecInfo
 from openhands.app_server.sandbox.do_mars_tunnel import tcp_forward
-from openhands.app_server.sandbox.sandbox_models import SandboxStatus
+from openhands.app_server.sandbox.sandbox_models import (
+    SandboxStartedBy,
+    SandboxStatus,
+)
 from openhands.app_server.sandbox.sandbox_store import (
     StoredSandbox,
     hash_session_api_key,
@@ -57,7 +61,7 @@ def _spec() -> DoMarsSpecInfo:
     )
 
 
-def _service(db, user, provider, startup_timeout_seconds=300):
+def _service(db, user, provider, startup_timeout_seconds=300, pool_config=None):
     specs = AsyncMock()
     specs.get_sandbox_spec.return_value = _spec()
     return DoMarsSandboxService(
@@ -71,6 +75,7 @@ def _service(db, user, provider, startup_timeout_seconds=300):
         gateway_base_url='https://runtime.example.invalid',
         callback_url='https://app.example.invalid',
         startup_timeout_seconds=startup_timeout_seconds,
+        pool_config=pool_config,
     )
 
 
@@ -314,15 +319,70 @@ def test_migration_is_rebased_on_release_head_and_survives_stamp_rollback(
             ).scalar()
 
     expected = {'provider_resource_id', 'provider_create_intent_at'}
-    assert version() == 'do_mars_001' and columns() == expected
+    # 'head' is now do_mars_002 (the warm-pool migration, do_mars_001's
+    # child); its own table is unrelated to these two v1_remote_sandbox
+    # columns, which is why they are still exactly `expected` here.
+    assert version() == 'do_mars_002' and columns() == expected
     # Data-preserving rollback: stock image sees 213, columns stay.
     postgres_testdb.run_alembic(server, name, 'stamp', '213')
     assert version() == '213' and columns() == expected
     # Reinstall is idempotent on the kept columns.
     postgres_testdb.run_alembic(server, name, 'upgrade', 'head')
-    assert version() == 'do_mars_001' and columns() == expected
+    assert version() == 'do_mars_002' and columns() == expected
     # Full downgrade removes them; upgrade restores them.
     postgres_testdb.run_alembic(server, name, 'downgrade', '213')
     assert version() == '213' and columns() == set()
     postgres_testdb.run_alembic(server, name, 'upgrade', 'head')
     assert columns() == expected
+
+
+@pytest.mark.asyncio
+async def test_pool_claim_is_scoped_to_the_resolved_spec_config_id(async_session_maker):
+    """A pool claim must be keyed on the provider's real config id for this
+    spec (spec.config_id - the same value start_sandbox's own create path
+    passes to do.create_session), never a separate pool-only label.
+
+    A prior revision passed an independently-settable ``pool_config_id``
+    (defaulting to the literal string "default") to claim_one instead. That
+    value could silently diverge from the DO config a spec actually
+    resolves to, so if an operator rotated the spec's provider config, a
+    pool slot created under the *old* config could still be claimed for a
+    request now resolving to the *new* one. Keying the claim on
+    spec.config_id directly means a rotated-out config's slots simply stop
+    matching - with no extra validation required, and no path for this
+    service to ask the provider for a VM under one config while believing
+    it is handing out the other.
+    """
+    spec = _spec()
+    assert spec.config_id == 'fixture-config'
+
+    with patch(
+        'openhands.app_server.sandbox.do_mars_sandbox_service.claim_one',
+        new=AsyncMock(return_value=None),
+    ) as claim_one_mock:
+        async with async_session_maker() as db:
+            service = _service(
+                db,
+                _user(OWNER),
+                AsyncMock(),
+                pool_config=DoMarsPoolConfig(
+                    enabled=True,
+                    sandbox_spec_id=spec.id,
+                    min_hot=1,
+                    min_paused_reserve=0,
+                    max_total=1,
+                ),
+            )
+            result = await service._start_sandbox_from_pool(
+                spec,
+                'sbx-pool-claim',
+                SandboxStartedBy.USER,
+                None,
+                OWNER,
+                None,
+            )
+
+    assert result is None  # claim_one mocked to find nothing: no fall-through side effects.
+    claim_one_mock.assert_awaited_once()
+    assert claim_one_mock.await_args.kwargs['config_id'] == spec.config_id
+    assert claim_one_mock.await_args.kwargs['config_id'] != 'default'
